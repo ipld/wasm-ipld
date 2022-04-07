@@ -29,6 +29,9 @@ serde_ipld_dagcbor = {version = "0.1.2"}
 serde-transcode = {version = "1.1.1"}
 bt_bencode = {version = "0.6.1"}
 libipld = {version = "0.13.1"}
+serde = {version = "1.0.136"}
+integer-encoding = { version = "3.0.3"}
+num_enum = { version = "0.5.7" }
 
 hex = { version = "0.4" }
 
