@@ -127,14 +127,17 @@ pub unsafe fn lbw() {
 
 ///*
 
+#[cfg(target_arch = "wasm32")]
 extern {
     fn load_block(cid_bytes: *const u8, cid_length: u8) -> *const u8;
 }
 
+#[cfg(target_arch = "wasm32")]
 extern {
     fn foo(info : u32) -> ();
 }
 
+#[cfg(target_arch = "wasm32")]
 unsafe fn load_block_wrapper(blk_cid : Cid) -> &'static [u8] {
     let blk_cid_bytes = blk_cid.to_bytes();
     let cidptr = blk_cid_bytes.as_ptr();
@@ -150,8 +153,11 @@ unsafe fn load_block_wrapper(blk_cid : Cid) -> &'static [u8] {
     );
     return block_data
 }
-//*/
-/*
+
+#[cfg(not(target_arch = "wasm32"))]
+fn foo(_info : u32) -> () {}
+
+#[cfg(not(target_arch = "wasm32"))]
 unsafe fn load_block_wrapper(blk_cid : Cid) -> &'static [u8] {
     let blk_cid_bytes = blk_cid.to_bytes();
     let cidptr = blk_cid_bytes.as_ptr();
@@ -170,17 +176,19 @@ unsafe fn load_block_wrapper(blk_cid : Cid) -> &'static [u8] {
     }
 }
 
-*/
+#[cfg(not(target_arch = "wasm32"))]
 unsafe fn load_block_err(cid_bytes: *const u8, cid_length: u8, block_len : &mut u32) -> Result<*const u8, Error> {
     let mut block_store = BTreeMap::new();
 
-    let dig1 : &[u8] = &[0x1 ; 20];
-    let mh1 = Multihash::wrap(0x11,dig1)?;
-    block_store.insert(libipld::Cid::new_v1(0x55, mh1), dig1);
+    let dig1 = hex::decode("38666b8ba500faa5c2406f4575d42a92379844c2")?;
+    let blk1 : &[u8] = &[0x61 ; 30];
+    let mh1 = Multihash::wrap(0x11,&dig1)?;
+    block_store.insert(libipld::Cid::new_v1(0x55, mh1), blk1);
 
-    let dig2 : &[u8] = &[0x2 ; 20];
-    let mh2 = Multihash::wrap(0x11,dig2)?;
-    block_store.insert(libipld::Cid::new_v1(0x55, mh2), dig2);
+    let dig2 = hex::decode("45dfb79d668374f6578b3128746dce59b7a02e80")?;
+    let blk2 : &[u8] = &[0x62 ; 10];
+    let mh2 = Multihash::wrap(0x11,&dig2)?;
+    block_store.insert(libipld::Cid::new_v1(0x55, mh2), blk2);
 
     let cid_vec = Vec::from_raw_parts(cid_bytes as *mut u8, cid_length as usize, cid_length as usize);
     let cid_bytes: &[u8] = &cid_vec;
@@ -191,6 +199,7 @@ unsafe fn load_block_err(cid_bytes: *const u8, cid_length: u8, block_len : &mut 
             let block_data = block_entry.to_owned();
             *block_len = block_data.len() as u32;
             std::mem::forget(block_store);
+            std::mem::forget(block_data);
             return Ok(block_data.as_ptr())
         }
         Err(_) => panic!("could not read the CID"),
