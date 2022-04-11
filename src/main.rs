@@ -20,7 +20,19 @@ fn main() {
         let mut buffer : Vec<u8> = Vec::new();
         buffer.resize(40, 0);
         
-        let num_read = read_adl(adl_ptr as *mut u8, buffer.as_mut_ptr(), buffer.capacity() as i32);
+        let num_read = read_adl(adl_ptr as *mut u8, buffer.as_mut_ptr(), buffer.len() as i32);
+        println!("Result: read {:#?} bytes", num_read);
+        println!("Result: read {:#?} ", buffer.as_slice());
+
+        let adl_ptr = load_adl(cbor_file_root.as_mut_ptr(), cbor_file_root.len());
+        let mut buffer : Vec<u8> = Vec::new();
+        buffer.resize(20, 0);
+
+        let num_read = read_adl(adl_ptr as *mut u8, buffer.as_mut_ptr(), buffer.len() as i32);
+        println!("Result: read {:#?} bytes", num_read);
+        println!("Result: read {:#?} ", buffer.as_slice());
+
+        let num_read = read_adl(adl_ptr as *mut u8, buffer.as_mut_ptr(), buffer.len() as i32);
         println!("Result: read {:#?} bytes", num_read);
         println!("Result: read {:#?} ", buffer.as_slice());
     }

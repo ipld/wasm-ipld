@@ -1,6 +1,6 @@
-use std::{collections::BTreeMap, intrinsics::{copy_nonoverlapping, transmute}, convert::TryInto, fs::File, io::Read, borrow::BorrowMut};
+use std::{collections::BTreeMap, convert::TryInto};
 
-use libipld::{codec::Codec, ipld, error::Error, Multihash, cid::CidGeneric, Cid};
+use libipld::{ error::Error, Multihash, cid::CidGeneric, Cid};
 
 mod bencode;
 mod wac;
@@ -15,18 +15,8 @@ mod wac;
 /// and return the offset to the start of the block.
 #[no_mangle]
 pub fn myalloc(len: usize) -> *mut u8 {
-    // create a new mutable buffer with capacity `len`
-    let mut buf = Vec::with_capacity(len);
-    // take a mutable pointer to the buffer
-    let ptr = buf.as_mut_ptr();
-    // take ownership of the memory block and
-    // ensure that its destructor is not
-    // called when the object goes out of scope
-    // at the end of the function
-    std::mem::forget(buf);
-    // return the pointer so the runtime
-    // can write data at this offset
-    return ptr;
+    let buf = vec![0u8; len];
+    Box::leak(buf.into_boxed_slice()).as_mut_ptr()
 }
 
 /// Given a pointer to the start of a byte array and
@@ -45,33 +35,6 @@ unsafe fn pattern(ptr: *mut u8, len: usize, out_len : &mut u32, func : fn(input:
     let data = Vec::from_raw_parts(ptr, len, len);
 
     let result = func(data, out_len);
-    let ptr = result.as_ptr();
-
-    // take ownership of the memory block where the result string
-    // is written and ensure its destructor is not
-    // called whe the object goes out of scope
-    // at the end of the function
-    std::mem::forget(result);
-    // return the pointer to the uppercase string
-    // so the runtime can read data from this offset
-    ptr
-}
-
-unsafe fn pattern2(ptr: *mut u8, len: usize, func : fn(input: &[u8]) -> Result<Vec<u8>, Error>) -> *const u8 {
-    //let data = Vec::from_raw_parts(ptr, len, len);
-
-    let data = ::std::slice::from_raw_parts(
-        ptr,
-        len,
-    );
-
-    let result_or_err = func(data);
-    match result_or_err {
-        Err(error) => panic!("{:?}", error),
-        _ => ()
-    };
-    let result = result_or_err.unwrap();
-
     let ptr = result.as_ptr();
 
     // take ownership of the memory block where the result string
@@ -138,7 +101,7 @@ extern {
 }
 
 #[cfg(target_arch = "wasm32")]
-unsafe fn load_block_wrapper(blk_cid : Cid) -> &'static [u8] {
+unsafe fn load_block_wrapper(blk_cid : Cid) -> Box<[u8]> {
     let blk_cid_bytes = blk_cid.to_bytes();
     let cidptr = blk_cid_bytes.as_ptr();
 
@@ -151,33 +114,37 @@ unsafe fn load_block_wrapper(blk_cid : Cid) -> &'static [u8] {
         blk_ptr,
         block_len as usize,
     );
-    return block_data
+    return block_data.to_owned().into_boxed_slice();
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn foo(_info : u32) -> () {}
+unsafe fn foo(_info : u32) -> () {
+    //println!("Foo: {:#?}", info);
+}
 
 #[cfg(not(target_arch = "wasm32"))]
-unsafe fn load_block_wrapper(blk_cid : Cid) -> &'static [u8] {
-    let blk_cid_bytes = blk_cid.to_bytes();
-    let cidptr = blk_cid_bytes.as_ptr();
-
+unsafe fn load_block_wrapper(blk_cid : Cid) -> Box<[u8]> {
     let mut block_len = 0;
-    let res = load_block_err(cidptr, blk_cid_bytes.len() as u8, &mut block_len);
-    match res {
+    let res = load_block_err(blk_cid, &mut block_len);
+    let z = match res {
         Err(_) => panic!("error"),
-        Ok(blk_ptr) => {
-            let block_data = ::std::slice::from_raw_parts(
-                blk_ptr,
-                block_len as usize,
-            );
-            block_data
+        Ok(blk_data) => {
+            let x = blk_data.into_boxed_slice();
+            x
         }
-    }
+    };
+    unsafe {foo(z[0].into());}
+    return z
+}
+
+unsafe fn read_cid(cid_bytes: *const u8, cid_length: u8) -> Result<Cid, libipld::cid::Error> {
+    let cid_vec = Vec::from_raw_parts(cid_bytes as *mut u8, cid_length as usize, cid_length as usize);
+    let cid_bytes: &[u8] = &cid_vec;
+    libipld::Cid::read_bytes(cid_bytes)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-unsafe fn load_block_err(cid_bytes: *const u8, cid_length: u8, block_len : &mut u32) -> Result<*const u8, Error> {
+fn load_block_err(c : Cid, block_len : &mut u32) -> Result<Vec<u8>, Error> {
     let mut block_store = BTreeMap::new();
 
     let dig1 = hex::decode("38666b8ba500faa5c2406f4575d42a92379844c2")?;
@@ -190,40 +157,42 @@ unsafe fn load_block_err(cid_bytes: *const u8, cid_length: u8, block_len : &mut 
     let mh2 = Multihash::wrap(0x11,&dig2)?;
     block_store.insert(libipld::Cid::new_v1(0x55, mh2), blk2);
 
-    let cid_vec = Vec::from_raw_parts(cid_bytes as *mut u8, cid_length as usize, cid_length as usize);
-    let cid_bytes: &[u8] = &cid_vec;
-    let cid_result = libipld::Cid::read_bytes(cid_bytes);
-    match cid_result {
-        Ok(c) => {
-            let block_entry = block_store.get(&c).ok_or(Error::msg("not found"))?;
-            let block_data = block_entry.to_owned();
-            *block_len = block_data.len() as u32;
-            std::mem::forget(block_store);
-            std::mem::forget(block_data);
-            return Ok(block_data.as_ptr())
+    let block_entry = block_store.get(&c).ok_or(Error::msg("not found"))?;
+    let mut block_data = Vec::new();
+    block_data.extend_from_slice(block_entry);
+    *block_len = block_data.len() as u32;
+    //std::mem::forget(block_store);
+    let res = Ok(block_data);
+    return res
+}
+
+#[no_mangle]
+pub unsafe fn load_adl(ptr: *mut u8, len: usize) -> *const u8  {
+    let block_data = ::std::slice::from_raw_parts(
+        ptr,
+        len,
+    );
+
+    let result_or_err = load_adl_internal(block_data);
+    match result_or_err {
+        Err(error) => panic!("{:?}", error),
+        Ok(val) => {
+            Box::into_raw(val) as *const u8
         }
-        Err(_) => panic!("could not read the CID"),
     }
 }
 
 #[no_mangle]
-pub unsafe fn load_adl(ptr: *mut u8, len: usize) -> *const u8  { 
-    pattern2(ptr, len, load_adl_internal)
-}
-
-#[no_mangle]
 pub unsafe fn seek_adl(adlptr: *mut u8, offset : i64, whence : u32) -> u64  {
-    let mut f : FileReader = std::ptr::read(adlptr as *const _);
-    let res = seek_adl_safe(&mut f, offset, whence);
+    let mut fb = Box::from_raw(adlptr as *mut FileReader);
+    let res = seek_adl_safe(fb.as_mut(), offset, whence);
 
-    foo(res as u32 + 2000000);
-    std::mem::forget(f);
-
-    return res
+    Box::leak(fb);
+    res
 }
 
 fn seek_adl_safe(f : &mut FileReader, offset : i64, whence : u32) -> u64  {
-    let mut new_offset : i64 = *f.offset as i64;
+    let mut new_offset : i64 = f.offset as i64;
     match whence {
         0 => new_offset = offset,
         1 => new_offset += offset,
@@ -235,30 +204,28 @@ fn seek_adl_safe(f : &mut FileReader, offset : i64, whence : u32) -> u64  {
         panic!("offset cannot be less than 0")
     }
 
-    *f.offset = new_offset as u64;
-    return *f.offset;
+    f.offset = new_offset as u64;
+    return f.offset;
 }
 
 #[no_mangle]
 pub unsafe fn read_adl(adlptr: *mut u8, bufptr : *mut u8, bufleni : i32) -> u32  {
-    foo(1);
-    let mut f : FileReader = std::ptr::read(adlptr as *const _) ;
+    let mut fb = Box::from_raw(adlptr as *mut FileReader);
+    
     let mut buf = Vec::from_raw_parts(bufptr, bufleni.try_into().unwrap(), bufleni.try_into().unwrap());
-    let res = read_adl_safer(&mut f, &mut buf);
+    let res = read_adl_safer(fb.as_mut(), &mut buf);
 
-    std::mem::forget(f);
-    std::mem::forget(buf);
-
+    Box::leak(fb);
+    let b_buf = Box::new(buf);
+    Box::leak(b_buf);
     res
 }
 
 fn read_adl_safer(f : &mut FileReader, buf : &mut [u8]) -> u32 {
-    unsafe {foo(2);}
-    unsafe {foo(*f.offset as u32 + 100000);}
     let buflen =buf.len() as u32;
 
     // skip if past the end
-    if *f.offset >= f.length {
+    if f.offset >= f.length {
         panic!("tried reading past the end of the file")
     }
 
@@ -267,7 +234,7 @@ fn read_adl_safer(f : &mut FileReader, buf : &mut [u8]) -> u32 {
     let mut bufrem = buflen;
 
     while at < f.length && bufrem > 0 {
-        if *f.offset > at+f.piece_len {
+        if f.offset > at+f.piece_len {
 			at += f.piece_len;
             piece_num += 1;
 			continue
@@ -275,15 +242,12 @@ fn read_adl_safer(f : &mut FileReader, buf : &mut [u8]) -> u32 {
 
         // fastforward the first one if needed.
         let blk_cid = f.pieces[piece_num];
-        let block_data : &[u8];
+        let block_data : Box<[u8]>;
 
-
-        unsafe {foo(8);}
         unsafe {block_data = load_block_wrapper(blk_cid);}
-        unsafe {foo(9);}
 
-		if at < *f.offset {
-            let delta = (*f.offset - at) as usize;
+		if at < f.offset {
+            let delta = (f.offset - at) as usize;
 
             let mut num_to_copy = bufrem;
             let block_rem = (block_data.len() - (delta as usize)) as u32;
@@ -295,7 +259,7 @@ fn read_adl_safer(f : &mut FileReader, buf : &mut [u8]) -> u32 {
             let buf_offset: usize = (buflen - bufrem).try_into().unwrap();
             buf[(buf_offset as usize)..(buf_offset + numcpy)].copy_from_slice(&block_data[(delta as usize)..(delta+numcpy)]);
             bufrem-=numcpy as u32;
-            at += numcpy as u64;
+            at = numcpy as u64 + f.offset;
 		} else {
             let mut num_to_copy = bufrem;
             let block_rem = block_data.len() as u32;
@@ -314,10 +278,7 @@ fn read_adl_safer(f : &mut FileReader, buf : &mut [u8]) -> u32 {
     }
 
     let num_read = buflen - bufrem;
-    unsafe {foo(100+buflen);}
-    unsafe {foo(200+bufrem);}
-    *f.offset += num_read as u64;
-    unsafe {foo(400000+*f.offset as u32);}
+    f.offset += num_read as u64;
     return num_read;
 }
 
@@ -342,7 +303,7 @@ fn ipld_try_bytestring(i : wac::Wac) -> Result<Vec<u8>, Error> {
     }
 }
 
-fn load_adl_internal<'a>(input: &[u8]) -> Result<Vec<u8>, Error> {
+fn load_adl_internal<'a>(input: &[u8]) -> Result<Box<FileReader>, Error> {
             // Assume node is WAC
             let node = wac::from_bytes(input)?;
 
@@ -373,22 +334,20 @@ fn load_adl_internal<'a>(input: &[u8]) -> Result<Vec<u8>, Error> {
             }
 
             let f = FileReader { 
-                offset: &mut 0, 
+                offset: 0, 
                 length: length_int as u64, 
                 piece_len: piece_length_int as u64, 
                 //cached_blocks: BTreeMap::new(), 
                 pieces: pieces,
             };
 
-            let f = std::mem::ManuallyDrop::new(f);
-
-            let bytes: &[u8] = unsafe { any_as_u8_slice(&f) };
-            return Ok(bytes.to_vec());
+            let fb = Box::new(f);
+            return Ok(fb);
 }
 
 #[repr(C)]
-struct FileReader<'a> {
-    offset: &'a mut u64,
+struct FileReader {
+    offset: u64,
     length: u64,
     piece_len: u64,
     //cached_blocks: BTreeMap<libipld::Cid, &'a [u8]>,
