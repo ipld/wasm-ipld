@@ -1,0 +1,13 @@
+[package]
+name = "wac"
+version = "0.1.0"
+edition = "2021"
+authors = ["Adin Schmahmann <adin.schmahmann@gmail.com>"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+num_enum = { version = "0.5.7" }
+libipld = {version = "0.13.1"}
+integer-encoding = { version = "3.0.3"}
+hex = { version = "0.4" }

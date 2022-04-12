@@ -2,8 +2,7 @@ use std::{collections::BTreeMap, convert::TryInto};
 
 use libipld::{cid::CidGeneric, error::Error, Cid, Multihash};
 
-mod bencode;
-mod wac;
+use wac;
 
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
 // allocator.
@@ -17,29 +16,6 @@ mod wac;
 pub fn myalloc(len: usize) -> *mut u8 {
     let buf = vec![0u8; len];
     Box::leak(buf.into_boxed_slice()).as_mut_ptr()
-}
-
-/// Given a pointer to the start of a byte array and
-/// its length, decode it into a standard IPLD codec representation
-/// (for now WAC)
-#[no_mangle]
-pub unsafe fn decode(ptr: *mut u8, len: usize, out_len: &mut u32) -> *const u8 {
-    let data = Vec::from_raw_parts(ptr, len, len);
-    let result = decode_block(data, out_len);
-
-    let bx = result.into_boxed_slice();
-    Box::into_raw(bx) as *const u8
-}
-
-fn decode_block(input: Vec<u8>, out_len: &mut u32) -> Vec<u8> {
-    let res = bencode::decode(input);
-    match res {
-        Ok(v) => {
-            *out_len = v.len() as u32;
-            return v;
-        }
-        Err(x) => panic!("{:#?}", x),
-    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -299,4 +275,67 @@ struct FileReader {
     length: u64,
     piece_len: u64,
     pieces: Vec<libipld::Cid>,
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{load_adl, read_adl, seek_adl};
+
+    #[test]
+    fn test_full_read() {
+        let hex_wac_file_root = "090406046e616d65060466696c65060c7069656365206c656e677468031e0606706965636573062838666b8ba500faa5c2406f4575d42a92379844c245dfb79d668374f6578b3128746dce59b7a02e8006066c656e6774680328";
+        let mut wac_file_root = hex::decode(hex_wac_file_root).unwrap();
+
+        unsafe {
+            let adl_ptr = load_adl(wac_file_root.as_mut_ptr(), wac_file_root.len());
+            let mut buffer: Vec<u8> = Vec::new();
+            buffer.resize(40, 0);
+
+            let num_read = read_adl(adl_ptr as *mut u8, buffer.as_mut_ptr(), buffer.len() as i32);
+            assert_eq!(num_read, 40);
+            assert_eq!(buffer.as_slice()[0..30], [0x61; 30]);
+            assert_eq!(buffer.as_slice()[30..], [0x62; 10]);
+        }
+    }
+
+    #[test]
+    fn test_partial_reads() {
+        let hex_wac_file_root = "090406046e616d65060466696c65060c7069656365206c656e677468031e0606706965636573062838666b8ba500faa5c2406f4575d42a92379844c245dfb79d668374f6578b3128746dce59b7a02e8006066c656e6774680328";
+        let mut wac_file_root = hex::decode(hex_wac_file_root).unwrap();
+
+        unsafe {
+            let adl_ptr = load_adl(wac_file_root.as_mut_ptr(), wac_file_root.len());
+            let mut buffer: Vec<u8> = Vec::new();
+            buffer.resize(20, 0);
+
+            let num_read = read_adl(adl_ptr as *mut u8, buffer.as_mut_ptr(), buffer.len() as i32);
+            assert_eq!(num_read, 20);
+            assert_eq!(buffer.as_slice()[0..20], [0x61; 20]);
+
+            let num_read = read_adl(adl_ptr as *mut u8, buffer.as_mut_ptr(), buffer.len() as i32);
+            assert_eq!(num_read, 20);
+            assert_eq!(buffer.as_slice()[0..10], [0x61; 10]);
+            assert_eq!(buffer.as_slice()[10..], [0x62; 10]);
+        }
+    }
+
+    #[test]
+    fn test_seek_read() {
+        let hex_wac_file_root = "090406046e616d65060466696c65060c7069656365206c656e677468031e0606706965636573062838666b8ba500faa5c2406f4575d42a92379844c245dfb79d668374f6578b3128746dce59b7a02e8006066c656e6774680328";
+        let mut wac_file_root = hex::decode(hex_wac_file_root).unwrap();
+
+        unsafe {
+            let adl_ptr = load_adl(wac_file_root.as_mut_ptr(), wac_file_root.len());
+            let mut buffer: Vec<u8> = Vec::new();
+            buffer.resize(20, 0);
+
+            let seek_to = seek_adl(adl_ptr as *mut u8, 15, 0);
+            assert_eq!(seek_to, 15);
+
+            let num_read = read_adl(adl_ptr as *mut u8, buffer.as_mut_ptr(), buffer.len() as i32);
+            assert_eq!(num_read, 20);
+            assert_eq!(buffer.as_slice()[0..15], [0x61; 15]);
+            assert_eq!(buffer.as_slice()[15..], [0x62; 5]);
+        }
+    }
 }

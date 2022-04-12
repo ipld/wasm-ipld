@@ -1,0 +1,12 @@
+[package]
+name = "bt_filev1"
+version = "0.1.0"
+edition = "2021"
+authors = ["Adin Schmahmann <adin.schmahmann@gmail.com>"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+libipld = {version = "0.13.1"}
+wac = { path = "../wac" }
+hex = { version = "0.4" }

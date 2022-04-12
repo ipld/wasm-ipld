@@ -1,0 +1,15 @@
+[package]
+name = "bencode"
+version = "0.1.0"
+edition = "2021"
+authors = ["Adin Schmahmann <adin.schmahmann@gmail.com>"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+
+libipld = {version = "0.13.1"}
+integer-encoding = { version = "3.0.3"}
+num_enum = { version = "0.5.7" }
+hex = { version = "0.4" }
+wac = { path = "../wac" }

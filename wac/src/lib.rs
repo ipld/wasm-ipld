@@ -3,9 +3,7 @@ use std::convert::TryFrom;
 use std::io::{BufRead, Cursor};
 
 use integer_encoding::VarIntReader;
-use libipld::cid::Cid;
-
-use libipld::error::Error;
+use libipld::{cid::Cid, error::Error};
 use num_enum::TryFromPrimitive;
 
 #[derive(Clone, PartialEq)]
