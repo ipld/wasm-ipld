@@ -57,7 +57,7 @@ pub enum WacBencode {
     Map(BTreeMap<Vec<u8>, WacBencode>),
 }
 
-pub fn bencode_to_wac_block(input: &[u8]) -> Result<Vec<u8>, Error> {
+fn bencode_to_wac_block(input: &[u8]) -> Result<Vec<u8>, Error> {
     let mut v = Vec::new();
     decoder_inner(input, 0, &mut v)?;
     Ok(v)
@@ -172,38 +172,50 @@ fn get_int(input: &[u8], mut cursor: usize, terminator: u8) -> Result<(usize, us
 mod tests {
     use std::convert::TryInto;
 
-    use crate::{decode, myalloc};
+    use crate::{decode, encode, myalloc};
 
     #[test]
     fn test_int() {
-        assert_eq!(decode_string("i50e"), [3, 50])
+        test_equality("i50e", &[3, 50]);
     }
 
     #[test]
     fn test_string() {
-        assert_eq!(
-            decode_string("6:length"),
-            [6, 6, 108, 101, 110, 103, 116, 104]
-        )
+        test_equality("6:length", &[6, 6, 108, 101, 110, 103, 116, 104])
     }
 
     #[test]
     fn test_list() {
-        assert_eq!(
-            decode_string("l4:spami42ee"),
-            [8, 2, 6, 4, 115, 112, 97, 109, 3, 42]
-        )
+        test_equality("l4:spami42ee", &[8, 2, 6, 4, 115, 112, 97, 109, 3, 42])
     }
 
     #[test]
     fn test_map() {
-        assert_eq!(
-            decode_string("d3:bar4:spam3:fooi42ee"),
-            [9, 2, 6, 3, 98, 97, 114, 6, 4, 115, 112, 97, 109, 6, 3, 102, 111, 111, 3, 42,]
+        test_equality(
+            "d3:bar4:spam3:fooi42ee",
+            &[
+                9, 2, 6, 3, 98, 97, 114, 6, 4, 115, 112, 97, 109, 6, 3, 102, 111, 111, 3, 42,
+            ],
         )
     }
 
+    fn test_equality(bencode_block: &str, wac_block: &[u8]) {
+        assert_eq!(decode_string(bencode_block), wac_block);
+        assert_eq!(encode_bytes(wac_block), bencode_block.as_bytes())
+    }
+
     fn decode_string(input: &str) -> Vec<u8> {
+        convert_block(input.as_bytes(), decode)
+    }
+
+    fn encode_bytes(input: &[u8]) -> Vec<u8> {
+        convert_block(input, encode)
+    }
+
+    fn convert_block(
+        input: &[u8],
+        transform_fn: unsafe fn(ptr: *mut u8, len: usize, out_len: &mut u32) -> *const u8,
+    ) -> Vec<u8> {
         // call the `alloc` function
         let ptr = myalloc(input.len());
         let mut output: Vec<u8>;
@@ -214,14 +226,91 @@ mod tests {
             // call the `array_sum` function with the pointer
             // and the length of the array
             let mut output_len: u32 = 0;
-            let res_start = decode(ptr, input.len(), &mut output_len);
+            let res_start = transform_fn(ptr, input.len(), &mut output_len);
 
             let ol_res = output_len.try_into().unwrap();
             output = vec![0; ol_res];
             std::ptr::copy(res_start, output.as_mut_ptr(), ol_res);
         }
-        println!("{:#?}", output);
-
         output
+    }
+}
+
+/// Given a pointer to the start of a byte array of WAC data
+/// encode the data into the codec
+///
+/// # Safety
+///
+/// This function assumes the block pointer has size have been allocated and filled.
+#[no_mangle]
+pub unsafe fn encode(ptr: *mut u8, len: usize, out_len: &mut u32) -> *const u8 {
+    let data = Vec::from_raw_parts(ptr, len, len);
+    let result = encode_block(&data, out_len);
+
+    let bx = result.into_boxed_slice();
+    Box::into_raw(bx) as *const u8
+}
+
+fn encode_block(input: &[u8], out_len: &mut u32) -> Vec<u8> {
+    let res = wac_to_bencode_block(input);
+    match res {
+        Ok(v) => {
+            *out_len = v.len() as u32;
+            v
+        }
+        Err(x) => panic!("{:#?}", x),
+    }
+}
+
+fn wac_to_bencode_block(input: &[u8]) -> Result<Vec<u8>, Error> {
+    let w = wac::from_bytes(input)?;
+
+    let mut v = Vec::new();
+    wac_to_bencode_inner(w, &mut v)?;
+    Ok(v)
+}
+
+fn wac_to_bencode_inner(w: wac::Wac, output: &mut Vec<u8>) -> Result<(), Error> {
+    match w {
+        wac::Wac::Null => Err(Error::msg("null not supported")),
+        wac::Wac::Bool(_) => Err(Error::msg("bool not supported")),
+        wac::Wac::Integer(i) => {
+            if i >= 0 {
+                output.write_all(&[b'i'])?;
+                output.write_all(i.to_string().as_bytes())?;
+            } else {
+                output.write_all(&[b'i', b'-'])?;
+                output.write_all((-i).to_string().as_bytes())?;
+            }
+            output.write_all(&[b'e'])?;
+            Ok(())
+        }
+        wac::Wac::Float(_) => Err(Error::msg("float not supported")),
+        wac::Wac::String(s) => {
+            output.write_all(s.len().to_string().as_bytes())?;
+            output.write_all(&[b':'])?;
+            output.write_all(s.as_slice())?;
+            Ok(())
+        }
+        wac::Wac::Bytes(_) => Err(Error::msg("bytes not supported")),
+        wac::Wac::List(l) => {
+            output.write_all(&[b'l'])?;
+            for elem in l {
+                wac_to_bencode_inner(elem, output)?;
+            }
+            output.write_all(&[b'e'])?;
+            Ok(())
+        }
+        wac::Wac::Map(m) => {
+            output.write_all(&[b'd'])?;
+            // TODO: verify data is ordered correctly
+            for (k, v) in m {
+                wac_to_bencode_inner(wac::Wac::String(k), output)?;
+                wac_to_bencode_inner(v, output)?;
+            }
+            output.write_all(&[b'e'])?;
+            Ok(())
+        }
+        wac::Wac::Link(_) => Err(Error::msg("link not supported")),
     }
 }
