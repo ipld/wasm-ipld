@@ -50,7 +50,7 @@ unsafe fn log_marker(_marker: u32) -> () {
 #[cfg(not(target_arch = "wasm32"))]
 unsafe fn load_block_wrapper(blk_cid: Cid) -> Box<[u8]> {
     let mut block_len = 0;
-    log_marker(42);     
+    log_marker(42);
     let res = load_block_err(blk_cid, &mut block_len);
     match res {
         Err(_) => panic!("error"),
