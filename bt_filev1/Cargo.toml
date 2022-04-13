@@ -4,9 +4,21 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Adin Schmahmann <adin.schmahmann@gmail.com>"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["wee_alloc"]
 
 [dependencies]
+
+# `wee_alloc` is a tiny allocator for wasm that is only ~1K in code size
+# compared to the default allocator's ~10K. It is slower than the default
+# allocator, however.
+#
+# Unfortunately, `wee_alloc` requires nightly Rust when targeting wasm for now.
+wee_alloc = { version = "0.4.5", optional = true }
+
 libipld = {version = "0.13.1"}
 wac = { path = "../wac" }
 hex = { version = "0.4" }

@@ -6,6 +6,12 @@ use integer_encoding::VarIntReader;
 use libipld::{cid::Cid, error::Error};
 use num_enum::TryFromPrimitive;
 
+// When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
+// allocator.
+#[cfg(feature = "wee_alloc")]
+#[global_allocator]
+static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
+
 #[derive(Clone, PartialEq)]
 pub enum Wac {
     /// Represents the absence of a value or the value undefined.

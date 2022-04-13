@@ -6,9 +6,9 @@ use wac;
 
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
 // allocator.
-//#[cfg(feature = "wee_alloc")]
-//#[global_allocator]
-//static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
+#[cfg(feature = "wee_alloc")]
+#[global_allocator]
+static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
 /// Allocate memory into the module's linear memory
 /// and return the offset to the start of the block.
@@ -50,7 +50,7 @@ unsafe fn log_marker(_marker: u32) -> () {
 #[cfg(not(target_arch = "wasm32"))]
 unsafe fn load_block_wrapper(blk_cid: Cid) -> Box<[u8]> {
     let mut block_len = 0;
-    log_marker(42);
+    log_marker(42);     
     let res = load_block_err(blk_cid, &mut block_len);
     match res {
         Err(_) => panic!("error"),
