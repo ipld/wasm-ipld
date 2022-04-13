@@ -2,8 +2,6 @@ use std::{collections::BTreeMap, convert::TryInto};
 
 use libipld::{cid::CidGeneric, error::Error, Cid, Multihash};
 
-use wac;
-
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
 // allocator.
 #[cfg(feature = "wee_alloc")]
@@ -25,7 +23,7 @@ extern "C" {
 
 #[cfg(target_arch = "wasm32")]
 extern "C" {
-    fn log_marker(info: u32) -> ();
+    fn log_marker(info: u32);
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -39,11 +37,11 @@ unsafe fn load_block_wrapper(blk_cid: Cid) -> Box<[u8]> {
 
     let blk_ptr = (blk_with_len_ptr as usize + 8) as *const u8;
     let block_data = ::std::slice::from_raw_parts(blk_ptr, block_len as usize);
-    return block_data.to_owned().into_boxed_slice();
+    block_data.to_owned().into_boxed_slice()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-unsafe fn log_marker(_marker: u32) -> () {
+unsafe fn log_marker(_marker: u32) {
     //println!("Foo: {:#?}", info);
 }
 
@@ -54,10 +52,7 @@ unsafe fn load_block_wrapper(blk_cid: Cid) -> Box<[u8]> {
     let res = load_block_err(blk_cid, &mut block_len);
     match res {
         Err(_) => panic!("error"),
-        Ok(blk_data) => {
-            let x = blk_data.into_boxed_slice();
-            x
-        }
+        Ok(blk_data) => blk_data.into_boxed_slice(),
     }
 }
 
@@ -75,14 +70,18 @@ fn load_block_err(c: Cid, block_len: &mut u32) -> Result<Vec<u8>, Error> {
     let mh2 = Multihash::wrap(0x11, &dig2)?;
     block_store.insert(libipld::Cid::new_v1(0x55, mh2), blk2);
 
-    let block_entry = block_store.get(&c).ok_or(Error::msg("not found"))?;
+    let block_entry = block_store
+        .get(&c)
+        .ok_or_else(|| Error::msg("input is empty"))?;
     let mut block_data = Vec::new();
     block_data.extend_from_slice(block_entry);
     *block_len = block_data.len() as u32;
-    let res = Ok(block_data);
-    return res;
+    Ok(block_data)
 }
 
+/// # Safety
+///
+/// This function assumes the block pointer has size have been allocated and filled.
 #[no_mangle]
 pub unsafe fn load_adl(ptr: *mut u8, len: usize) -> *const u8 {
     let block_data = ::std::slice::from_raw_parts(ptr, len);
@@ -94,6 +93,9 @@ pub unsafe fn load_adl(ptr: *mut u8, len: usize) -> *const u8 {
     }
 }
 
+/// # Safety
+///
+/// This function assumes the adlptr is to a valid adl node
 #[no_mangle]
 pub unsafe fn seek_adl(adlptr: *mut u8, offset: i64, whence: u32) -> u64 {
     let mut fb = Box::from_raw(adlptr as *mut FileReader);
@@ -117,9 +119,13 @@ fn seek_adl_safe(f: &mut FileReader, offset: i64, whence: u32) -> u64 {
     }
 
     f.offset = new_offset as u64;
-    return f.offset;
+    f.offset
 }
 
+/// # Safety
+///
+/// This function assumes the adl pointer is to a valid adl node.
+/// Also assumes the buffer pointer is to an allocated and usable buffer.
 #[no_mangle]
 pub unsafe fn read_adl(adlptr: *mut u8, bufptr: *mut u8, bufleni: i32) -> u32 {
     let mut fb = Box::from_raw(adlptr as *mut FileReader);
@@ -199,31 +205,31 @@ fn read_adl_safer(f: &mut FileReader, buf: &mut [u8]) -> u32 {
 
     let num_read = buflen - bufrem;
     f.offset += num_read as u64;
-    return num_read;
+    num_read
 }
 
 fn ipld_try_map(i: wac::Wac) -> Result<BTreeMap<Vec<u8>, wac::Wac>, Error> {
     match i {
-        wac::Wac::Map(val) => return Ok(val),
-        _ => return Err(libipld::error::Error::msg("not a map")),
+        wac::Wac::Map(val) => Ok(val),
+        _ => Err(libipld::error::Error::msg("not a map")),
     }
 }
 
 fn ipld_try_int(i: wac::Wac) -> Result<i128, Error> {
     match i {
-        wac::Wac::Integer(val) => return Ok(val),
-        _ => return Err(libipld::error::Error::msg("not an integer")),
+        wac::Wac::Integer(val) => Ok(val),
+        _ => Err(libipld::error::Error::msg("not an integer")),
     }
 }
 
 fn ipld_try_bytestring(i: wac::Wac) -> Result<Vec<u8>, Error> {
     match i {
-        wac::Wac::String(val) => return Ok(val),
-        _ => return Err(libipld::error::Error::msg("not a bytestring")),
+        wac::Wac::String(val) => Ok(val),
+        _ => Err(libipld::error::Error::msg("not a bytestring")),
     }
 }
 
-fn load_adl_internal<'a>(input: &[u8]) -> Result<Box<FileReader>, Error> {
+fn load_adl_internal(input: &[u8]) -> Result<Box<FileReader>, Error> {
     // Assume node is WAC
     let node = wac::from_bytes(input)?;
 
@@ -231,7 +237,7 @@ fn load_adl_internal<'a>(input: &[u8]) -> Result<Box<FileReader>, Error> {
 
     let pieces_node = node_map
         .get("pieces".as_bytes())
-        .ok_or(libipld::error::Error::msg("pieces not in node"))?;
+        .ok_or_else(|| libipld::error::Error::msg("pieces not in node"))?;
     let pieces_bytes = ipld_try_bytestring(pieces_node.to_owned())?;
 
     const SHA1_HASH_LEN: usize = 20;
@@ -243,12 +249,12 @@ fn load_adl_internal<'a>(input: &[u8]) -> Result<Box<FileReader>, Error> {
 
     let piece_length_node = node_map
         .get("piece length".as_bytes())
-        .ok_or(libipld::error::Error::msg("piece length not in node"))?;
+        .ok_or_else(|| libipld::error::Error::msg("piece length not in node"))?;
     let piece_length_int = ipld_try_int(piece_length_node.to_owned())?;
 
     let length_node = node_map
         .get("length".as_bytes())
-        .ok_or(libipld::error::Error::msg("length not in node"))?;
+        .ok_or_else(|| libipld::error::Error::msg("length not in node"))?;
     let length_int = ipld_try_int(length_node.to_owned())?;
 
     let mut pieces: Vec<libipld::Cid> = Vec::new();
@@ -262,11 +268,11 @@ fn load_adl_internal<'a>(input: &[u8]) -> Result<Box<FileReader>, Error> {
         offset: 0,
         length: length_int as u64,
         piece_len: piece_length_int as u64,
-        pieces: pieces,
+        pieces,
     };
 
     let fb = Box::new(f);
-    return Ok(fb);
+    Ok(fb)
 }
 
 #[repr(C)]

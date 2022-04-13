@@ -53,7 +53,7 @@ fn from_cursor(cur: &mut Cursor<&[u8]>) -> Result<Wac, Error> {
     let x = cur
         .get_ref()
         .get(cur.position() as usize)
-        .ok_or(Error::msg("input is empty"))?;
+        .ok_or_else(|| Error::msg("input is empty"))?;
     cur.consume(1);
     let y = WacCode::try_from(*x)?;
     match y {

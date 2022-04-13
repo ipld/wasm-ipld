@@ -22,21 +22,25 @@ pub fn myalloc(len: usize) -> *mut u8 {
 /// Given a pointer to the start of a byte array and
 /// its length, decode it into a standard IPLD codec representation
 /// (for now WAC)
+///
+/// # Safety
+///
+/// This function assumes the block pointer has size have been allocated and filled.
 #[no_mangle]
 pub unsafe fn decode(ptr: *mut u8, len: usize, out_len: &mut u32) -> *const u8 {
     let data = Vec::from_raw_parts(ptr, len, len);
-    let result = decode_block(data, out_len);
+    let result = decode_block(&data, out_len);
 
     let bx = result.into_boxed_slice();
     Box::into_raw(bx) as *const u8
 }
 
-fn decode_block(input: Vec<u8>, out_len: &mut u32) -> Vec<u8> {
+fn decode_block(input: &[u8], out_len: &mut u32) -> Vec<u8> {
     let res = bencode_to_wac_block(input);
     match res {
         Ok(v) => {
             *out_len = v.len() as u32;
-            return v;
+            v
         }
         Err(x) => panic!("{:#?}", x),
     }
@@ -53,21 +57,21 @@ pub enum WacBencode {
     Map(BTreeMap<Vec<u8>, WacBencode>),
 }
 
-pub fn bencode_to_wac_block(input: Vec<u8>) -> Result<Vec<u8>, Error> {
+pub fn bencode_to_wac_block(input: &[u8]) -> Result<Vec<u8>, Error> {
     let mut v = Vec::new();
-    decoder_inner(&input, 0, &mut v)?;
+    decoder_inner(input, 0, &mut v)?;
     Ok(v)
 }
 
 fn decoder_inner(
-    input: &Vec<u8>,
+    input: &[u8],
     mut cursor: usize,
     output: &mut Vec<u8>,
 ) -> Result<(usize, WacCode), Error> {
     match input[cursor] {
         b'i' => {
             cursor += 1;
-            let n = input.get(cursor).ok_or(Error::msg("invalid int"))?;
+            let n = input.get(cursor).ok_or_else(|| Error::msg("invalid int"))?;
             match n {
                 b'-' => {
                     cursor += 1;
@@ -75,16 +79,16 @@ fn decoder_inner(
                     output.push(WacCode::NInt as u8);
                     output.write_varint(val)?;
                     cursor = outc;
-                    return Ok((cursor, WacCode::NInt));
+                    Ok((cursor, WacCode::NInt))
                 }
                 b'0'..=b'9' => {
                     let (val, outc) = get_int(input, cursor, b'e')?;
                     output.push(WacCode::Int as u8);
                     output.write_varint(val)?;
                     cursor = outc;
-                    return Ok((cursor, WacCode::Int));
+                    Ok((cursor, WacCode::Int))
                 }
-                _ => return Err(Error::msg("invalid token")),
+                _ => Err(Error::msg("invalid token")),
             }
         }
         b'l' => {
@@ -93,13 +97,14 @@ fn decoder_inner(
             let mut buf = Vec::new();
             let mut num_elems: usize = 0;
             loop {
-                match input.get(cursor).ok_or(Error::msg("invalid list"))? {
-                    b'e' => {
-                        output.write_varint(num_elems)?;
-                        output.write(&buf)?;
-                        return Ok((cursor, WacCode::List));
-                    }
-                    _ => (),
+                if input
+                    .get(cursor)
+                    .ok_or_else(|| Error::msg("invalid list"))?
+                    == &b'e'
+                {
+                    output.write_varint(num_elems)?;
+                    output.write_all(&buf)?;
+                    return Ok((cursor, WacCode::List));
                 }
                 let (outc, _) = decoder_inner(input, cursor, &mut buf)?;
                 num_elems += 1;
@@ -113,13 +118,10 @@ fn decoder_inner(
             let mut buf = Vec::new();
             let mut num_elems: usize = 0;
             loop {
-                match input.get(cursor).ok_or(Error::msg("invalid map"))? {
-                    b'e' => {
-                        output.write_varint(num_elems)?;
-                        output.write(&buf)?;
-                        return Ok((cursor, WacCode::Map));
-                    }
-                    _ => (),
+                if input.get(cursor).ok_or_else(|| Error::msg("invalid map"))? == &b'e' {
+                    output.write_varint(num_elems)?;
+                    output.write_all(&buf)?;
+                    return Ok((cursor, WacCode::Map));
                 }
 
                 // keys must be bytestrings
@@ -138,18 +140,20 @@ fn decoder_inner(
             cursor = outc;
             output.push(WacCode::String as u8);
             output.write_varint(len)?;
-            output.write(&input[cursor..cursor + len])?;
+            output.write_all(&input[cursor..cursor + len])?;
             cursor += len;
-            return Ok((cursor, WacCode::String));
+            Ok((cursor, WacCode::String))
         }
-        _ => return Err(Error::msg("invalid token")),
+        _ => Err(Error::msg("invalid token")),
     }
 }
 
-fn get_int(input: &Vec<u8>, mut cursor: usize, terminator: u8) -> Result<(usize, usize), Error> {
+fn get_int(input: &[u8], mut cursor: usize, terminator: u8) -> Result<(usize, usize), Error> {
     let mut len_buf = Vec::new();
     loop {
-        let n = *input.get(cursor).ok_or(Error::msg("invalid integer"))?;
+        let n = *input
+            .get(cursor)
+            .ok_or_else(|| Error::msg("invalid integer"))?;
         match n {
             end if end == terminator => {
                 // TODO: leading zeros check
@@ -218,6 +222,6 @@ mod tests {
         }
         println!("{:#?}", output);
 
-        return output;
+        output
     }
 }
