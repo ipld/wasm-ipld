@@ -21,4 +21,5 @@ wee_alloc = { version = "0.4.5", optional = true }
 
 libipld = {version = "0.13.1"}
 wac = { path = "../wac" }
+example = { path = "../example" }
 hex = { version = "0.4" }

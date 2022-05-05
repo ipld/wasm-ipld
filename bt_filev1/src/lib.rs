@@ -1,4 +1,5 @@
 use std::{collections::BTreeMap, convert::TryInto};
+use example::{self, ValueOrError, get_error};
 
 use libipld::{cid::CidGeneric, error::Error, Cid, Multihash};
 
@@ -7,14 +8,6 @@ use libipld::{cid::CidGeneric, error::Error, Cid, Multihash};
 #[cfg(feature = "wee_alloc")]
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
-
-/// Allocate memory into the module's linear memory
-/// and return the offset to the start of the block.
-#[no_mangle]
-pub fn myalloc(len: usize) -> *mut u8 {
-    let buf = vec![0u8; len];
-    Box::leak(buf.into_boxed_slice()).as_mut_ptr()
-}
 
 #[cfg(target_arch = "wasm32")]
 extern "C" {
@@ -79,29 +72,89 @@ fn load_block_err(c: Cid, block_len: &mut u32) -> Result<Vec<u8>, Error> {
     Ok(block_data)
 }
 
+
+/// Takes a pointer and length of a byte array containing WAC encoded data and returns
+/// a pointer to the ADL instance.
+/// 
 /// # Safety
 ///
 /// This function assumes the block pointer has size have been allocated and filled.
 #[no_mangle]
-pub unsafe fn load_adl(ptr: *mut u8, len: usize) -> *const u8 {
+pub unsafe fn load_adl(ptr: *mut u8, len: u32) -> *mut ValueOrError{
+    let len = len as usize;
     let block_data = ::std::slice::from_raw_parts(ptr, len);
 
     let result_or_err = load_adl_internal(block_data);
     match result_or_err {
-        Err(error) => panic!("{:?}", error),
-        Ok(val) => Box::into_raw(val) as *const u8,
+        Err(error) => {
+            get_error(error) as *mut ValueOrError
+        },
+        Ok(val) => {            
+            let res = Box::new(ValueOrError {
+                err : std::ptr::null(),
+                value : val as *mut u8,
+            });
+            Box::into_raw(res)
+        },
     }
 }
 
+// Bytes
+
+/// Takes a pointer to an ADL along with the offset and whence enum.
+/// It returns the offset from the start of the data.
+/// 
+/// TODO: Allow returning an error
+/// 
+/// Whence enum:
+/// 0 - seek relative to the origin of the file
+/// 1 - seek relative to the current offset
+/// 2 - seek relative to the end
+/// 
 /// # Safety
 ///
 /// This function assumes the adlptr is to a valid adl node
 #[no_mangle]
 pub unsafe fn seek_adl(adlptr: *mut u8, offset: i64, whence: u32) -> u64 {
+    // Get ADL
     let mut fb = Box::from_raw(adlptr as *mut FileReader);
     let res = seek_adl_safe(fb.as_mut(), offset, whence);
 
+    // Release ADL memory
     Box::leak(fb);
+    res
+}
+
+/// Takes a pointer to an ADL as well as a buffer and its length
+/// and returns the number of bytes read.
+/// 
+/// TODO: Allow returning an error
+/// 
+/// # Safety
+///
+/// This function assumes the adl pointer is to a valid adl node.
+/// Also assumes the buffer pointer is to an allocated and usable buffer.
+#[no_mangle]
+pub unsafe fn read_adl(adlptr: *mut u8, bufptr: *mut u8, bufleni: i32) -> u32 {
+    // Get ADL
+    let mut fb = Box::from_raw(adlptr as *mut FileReader);
+
+    // Get buffer
+    let mut buf = Vec::from_raw_parts(
+        bufptr,
+        bufleni.try_into().unwrap(),
+        bufleni.try_into().unwrap(),
+    );
+
+    // Read into the buffer
+    let res = read_adl_safer(fb.as_mut(), &mut buf);
+
+    // Release ADL
+    Box::leak(fb);
+
+    // Release the buffer
+    let b_buf = Box::new(buf);
+    Box::leak(b_buf);
     res
 }
 
@@ -120,27 +173,6 @@ fn seek_adl_safe(f: &mut FileReader, offset: i64, whence: u32) -> u64 {
 
     f.offset = new_offset as u64;
     f.offset
-}
-
-/// # Safety
-///
-/// This function assumes the adl pointer is to a valid adl node.
-/// Also assumes the buffer pointer is to an allocated and usable buffer.
-#[no_mangle]
-pub unsafe fn read_adl(adlptr: *mut u8, bufptr: *mut u8, bufleni: i32) -> u32 {
-    let mut fb = Box::from_raw(adlptr as *mut FileReader);
-
-    let mut buf = Vec::from_raw_parts(
-        bufptr,
-        bufleni.try_into().unwrap(),
-        bufleni.try_into().unwrap(),
-    );
-    let res = read_adl_safer(fb.as_mut(), &mut buf);
-
-    Box::leak(fb);
-    let b_buf = Box::new(buf);
-    Box::leak(b_buf);
-    res
 }
 
 fn read_adl_safer(f: &mut FileReader, buf: &mut [u8]) -> u32 {
@@ -229,7 +261,7 @@ fn ipld_try_bytestring(i: wac::Wac) -> Result<Vec<u8>, Error> {
     }
 }
 
-fn load_adl_internal(input: &[u8]) -> Result<Box<FileReader>, Error> {
+fn load_adl_internal(input: &[u8]) -> Result<*mut FileReader, Error> {
     // Assume node is WAC
     let node = wac::from_bytes(input)?;
 
@@ -272,7 +304,7 @@ fn load_adl_internal(input: &[u8]) -> Result<Box<FileReader>, Error> {
     };
 
     let fb = Box::new(f);
-    Ok(fb)
+    Ok(Box::into_raw(fb))
 }
 
 #[repr(C)]
@@ -293,7 +325,8 @@ mod tests {
         let mut wac_file_root = hex::decode(hex_wac_file_root).unwrap();
 
         unsafe {
-            let adl_ptr = load_adl(wac_file_root.as_mut_ptr(), wac_file_root.len());
+            let adl_res_ptr = load_adl(wac_file_root.as_mut_ptr(), wac_file_root.len() as u32);
+            let adl_ptr = adl_res_ptr.as_ref().unwrap().to_result().expect("could not load adl");            
             let mut buffer: Vec<u8> = Vec::new();
             buffer.resize(40, 0);
 
@@ -310,7 +343,9 @@ mod tests {
         let mut wac_file_root = hex::decode(hex_wac_file_root).unwrap();
 
         unsafe {
-            let adl_ptr = load_adl(wac_file_root.as_mut_ptr(), wac_file_root.len());
+            let adl_res_ptr = load_adl(wac_file_root.as_mut_ptr(), wac_file_root.len() as u32);
+            let adl_ptr = adl_res_ptr.as_ref().unwrap().to_result().expect("could not load adl");            
+
             let mut buffer: Vec<u8> = Vec::new();
             buffer.resize(20, 0);
 
@@ -331,7 +366,9 @@ mod tests {
         let mut wac_file_root = hex::decode(hex_wac_file_root).unwrap();
 
         unsafe {
-            let adl_ptr = load_adl(wac_file_root.as_mut_ptr(), wac_file_root.len());
+            let adl_res_ptr = load_adl(wac_file_root.as_mut_ptr(), wac_file_root.len() as u32);
+            let adl_ptr = adl_res_ptr.as_ref().unwrap().to_result().expect("could not load adl");            
+
             let mut buffer: Vec<u8> = Vec::new();
             buffer.resize(20, 0);
 

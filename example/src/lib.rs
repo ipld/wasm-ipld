@@ -16,14 +16,26 @@ pub fn myalloc(len: usize) -> *mut u8 {
 
 #[repr(C)]
 pub struct ValueOrError {
-    err: *const ByteWrapper,
-    value: *mut u8
+    pub err: *const ByteWrapper,
+    pub value: *mut u8
+}
+
+impl ValueOrError {
+    pub unsafe fn to_result(&self) -> Result<*mut u8, libipld::error::Error> {
+        if !self.err.is_null() {
+            let err = &*self.err;
+            let msg = ::std::slice::from_raw_parts(err.msg_ptr, err.msg_len.try_into().unwrap());
+            let msg_str = std::str::from_utf8(msg)?;
+            return Err(libipld::error::Error::msg(msg_str));
+        }
+        Ok(self.value)        
+    }
 }
 
 #[repr(C)]
 pub struct ByteWrapper {
-    msg_len: u32,
-    msg_ptr: *const u8,
+    pub msg_len: u32,
+    pub msg_ptr: *const u8,
 }
 
 #[repr(C)]
@@ -39,16 +51,17 @@ pub struct BoolOrError {
     value: bool
 }
 
-fn get_error(err : libipld::error::Error) -> *const ValueOrError {
-    let errStr = err.to_string().as_bytes().to_owned();
-    let bx = errStr.into_boxed_slice();
+pub fn get_error(err : libipld::error::Error) -> *const ValueOrError {
+    let err_str = err.to_string().as_bytes().to_owned();
+    let bx = err_str.into_boxed_slice();
+    let bx_len = bx.len() as u32;
     let bytes_ptr = Box::into_raw(bx) as *const u8;
 
     let res = Box::new(ValueOrError {
         value : std::ptr::null::<u8>() as *mut u8,
         err : Box::into_raw(
             Box::new(ByteWrapper {
-        msg_len : bx.len() as u32,
+        msg_len : bx_len,
         msg_ptr : bytes_ptr,
     })
         ),
@@ -56,17 +69,18 @@ fn get_error(err : libipld::error::Error) -> *const ValueOrError {
     Box::into_raw(res)
 }
 
-fn get_result_bytes(result : Result<Vec<u8>, libipld::error::Error>) -> *const ValueOrError {
+pub fn get_result_bytes(result : Result<Vec<u8>, libipld::error::Error>) -> *const ValueOrError {
     match result {
         Ok(v) => {
             let bx = v.into_boxed_slice();
+            let bx_len = bx.len() as u32;
             let bytes_ptr = Box::into_raw(bx) as *const u8;
             
             let res = Box::new(ValueOrError {
                 err : std::ptr::null(),
                 value : Box::into_raw(
                     Box::new(ByteWrapper {
-                msg_len : bx.len() as u32,
+                msg_len : bx_len,
                 msg_ptr : bytes_ptr,
             })
                 ) as *mut u8,
@@ -79,15 +93,26 @@ fn get_result_bytes(result : Result<Vec<u8>, libipld::error::Error>) -> *const V
     }
 }
 
+// Extern Functions
+
+#[cfg(target_arch = "wasm32")]
+extern "C" {
+    fn load_raw_block(cid_bytes: *const u8, cid_length: u8) -> *const ByteWrapper;
+}
+
+#[cfg(target_arch = "wasm32")]
+extern "C" {
+    fn load_wac_block(cid_bytes: *const u8, cid_length: u8) -> *const ByteWrapper;
+}
+
 /*
+
+use std::any::Any;
 
 All returned data structures 
 
- */
-
 /// Given a pointer to the start of a byte array of WAC data
 /// encode the data into the codec
-/// 
 /// 
 ///
 /// # Safety
@@ -253,8 +278,6 @@ pub unsafe fn adl_get_generic(adlptr: *mut u8) -> *const u8 {
 
 // Recursive Types
 
-use std::any::Any;
-
 /// Takes a pointer to an ADL and returns its length.
 /// 
 /// TODO: Should we allow returning an error?
@@ -328,3 +351,5 @@ pub unsafe fn iter_done(adlptr: *mut u8) -> *const BoolOrError {
 #[no_mangle]
 pub unsafe fn new_list_iter(adlptr: *mut u8) -> *const ValueOrError {
 }
+
+*/

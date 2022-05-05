@@ -1,5 +1,6 @@
-use std::{collections::{BTreeMap, btree_map::Iter}, convert::TryInto, str::from_utf8};
+use std::{collections::{BTreeMap, btree_map::Iter}, convert::TryInto, str::from_utf8, any::{Any, TypeId}};
 
+use example::{ValueOrError, get_error, ADLorWAC};
 use libipld::{cid::CidGeneric, error::Error, Cid, Multihash};
 
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
@@ -8,91 +9,109 @@ use libipld::{cid::CidGeneric, error::Error, Cid, Multihash};
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
-/// Allocate memory into the module's linear memory
-/// and return the offset to the start of the block.
-#[no_mangle]
-pub fn myalloc(len: usize) -> *mut u8 {
-    let buf = vec![0u8; len];
-    Box::leak(buf.into_boxed_slice()).as_mut_ptr()
-}
-
-#[cfg(target_arch = "wasm32")]
-extern "C" {
-    fn load_block(cid_bytes: *const u8, cid_length: u8) -> *const u8;
-}
-
-#[cfg(target_arch = "wasm32")]
-extern "C" {
-    fn log_marker(info: u32);
-}
-
-#[cfg(target_arch = "wasm32")]
-unsafe fn load_block_wrapper(blk_cid: Cid) -> Box<[u8]> {
-    let blk_cid_bytes = blk_cid.to_bytes();
-    let cidptr = blk_cid_bytes.as_ptr();
-
-    let blk_with_len_ptr = load_block(cidptr, blk_cid_bytes.len() as u8);
-    let block_len = *(blk_with_len_ptr as *const u64);
-
-    let blk_ptr = (blk_with_len_ptr as usize + 8) as *const u8;
-    let block_data = ::std::slice::from_raw_parts(blk_ptr, block_len as usize);
-    block_data.to_owned().into_boxed_slice()
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-unsafe fn log_marker(_marker: u32) {
-    //println!("Foo: {:#?}", info);
-}
-
-pub fn unused() {
-    unsafe {log_marker(42)}
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-unsafe fn load_block_wrapper(blk_cid: Cid) -> Box<[u8]> {
-    let mut block_len = 0;
-    let res = load_block_err(blk_cid, &mut block_len);
-    match res {
-        Err(_) => panic!("error"),
-        Ok(blk_data) => blk_data.into_boxed_slice(),
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn load_block_err(c: Cid, block_len: &mut u32) -> Result<Vec<u8>, Error> {
-    let mut block_store = BTreeMap::new();
-
-    let dig1 = hex::decode("38666b8ba500faa5c2406f4575d42a92379844c2")?;
-    let blk1: &[u8] = &[0x61; 30];
-    let mh1 = Multihash::wrap(0x11, &dig1)?;
-    block_store.insert(libipld::Cid::new_v1(0x55, mh1), blk1);
-
-    let dig2 = hex::decode("45dfb79d668374f6578b3128746dce59b7a02e80")?;
-    let blk2: &[u8] = &[0x62; 10];
-    let mh2 = Multihash::wrap(0x11, &dig2)?;
-    block_store.insert(libipld::Cid::new_v1(0x55, mh2), blk2);
-
-    let block_entry = block_store
-        .get(&c)
-        .ok_or_else(|| Error::msg("input is empty"))?;
-    let mut block_data = Vec::new();
-    block_data.extend_from_slice(block_entry);
-    *block_len = block_data.len() as u32;
-    Ok(block_data)
-}
-
+/// Takes a pointer and length of a byte array containing WAC encoded data and returns
+/// a pointer to the ADL instance.
+/// 
 /// # Safety
 ///
 /// This function assumes the block pointer has size have been allocated and filled.
 #[no_mangle]
-pub unsafe fn load_adl(ptr: *mut u8, len: usize) -> *const u8 {
+pub unsafe fn load_adl(ptr: *mut u8, len: u32) -> *mut ValueOrError{
+    let len = len as usize;
     let block_data = ::std::slice::from_raw_parts(ptr, len);
 
     let result_or_err = load_adl_internal(block_data);
     match result_or_err {
-        Err(error) => panic!("{:?}", error),
-        Ok(val) => Box::into_raw(val) as *const u8,
+        Err(error) => {
+            get_error(error) as *mut ValueOrError
+        },
+        Ok(val) => {            
+            let res = Box::new(ValueOrError {
+                err : std::ptr::null(),
+                value : val as *mut u8,
+            });
+            Box::into_raw(res)
+        },
     }
+}
+
+/// Takes a pointer to an ADL and returns its length.
+/// 
+/// TODO: Should we allow returning an error?
+/// 
+/// # Safety
+///
+/// This function assumes the adlptr is to a valid adl node
+#[no_mangle]
+pub unsafe fn adl_len(adlptr: *mut u8) -> i64 {
+    let mut bx = Box::from_raw(adlptr as *mut dyn Any);    
+    let res = bx.downcast::<Directory>();
+    match res {
+        Ok(d) => d.length,
+        Err(_) => -1,
+    }
+}
+
+/// Takes a pointer to an ADL as well as a buffer and its length
+/// and returns either an error, an ADL pointer, or WAC data.
+/// 
+/// TODO: Allow returning an error
+/// 
+/// # Safety
+///
+/// This function assumes the adl pointer is to a valid adl node.
+/// Also assumes the buffer pointer is to an allocated and usable buffer.
+#[no_mangle]
+pub unsafe fn get_key(adlptr: *mut u8, key_ptr: *mut u8, key_len: i32) -> *const ADLorWAC {
+    let mut bx = Box::from_raw(adlptr as *mut dyn Any);
+    
+    let key_len = key_len as usize;
+    let key = ::std::slice::from_raw_parts(key_ptr, key_len);
+    let key_str = std::str::from_utf8(key);
+
+    let res = get_key_safe(bx, key_str);
+    match res {
+        Ok(b) => {
+            Box::into_raw(res)
+        },
+        Err(error) => get_error(error) as *mut ValueOrError,
+    }
+}
+
+fn get_key_safe(bx : Box<dyn Any>, key : &str) -> Result<Box<ADLorWAC>, libipld::error::Error> {
+    let dir_adl = bx.downcast::<Directory>().ok();
+    match dir_adl {
+        Some(adl) => {
+            return dir_get_key(adl.dir, key)
+        },
+        None => (),
+    }
+
+    let dir_adl = bx.downcast::<BTDir>().ok();
+    match dir_adl {
+        Some(dir) => return dir_get_key(dir, key),
+        None => (),
+    }
+
+    Err(libipld::error::Error::msg("type not valid"))
+}
+
+fn dir_get_key(dir : BTDir, key : &str) -> Result<Box<ADLorWAC>, libipld::error::Error> {
+    let val = dir.children.get(key).ok_or("not found")?;
+            let r = match val {
+                BTDirElem::Dir(d) => {
+                    let dbox = Box::new(d);
+                    let adl_ptr = std::ptr::null();
+                    let res = Box::new(ADLorWAC {
+                        err : std::ptr::null(),
+                        adl_ptr: Box::into_raw(dbox) as *const u8,
+                        wac: std::ptr::null(),
+                    });
+                    res
+                },
+                BTDirElem::File(f) => todo!(),
+            };
+            return Ok(r)
 }
 
 /// # Safety
@@ -293,7 +312,7 @@ fn ipld_try_bytestring(i: wac::Wac) -> Result<Vec<u8>, Error> {
     }
 }
 
-fn load_adl_internal(input: &[u8]) -> Result<Box<Directory>, Error> {
+fn load_adl_internal(input: &[u8]) -> Result<Box<dyn Any>, Error> {
     // Assume node is WAC
     let node = wac::from_bytes(input)?;
 
@@ -333,23 +352,42 @@ fn load_adl_internal(input: &[u8]) -> Result<Box<Directory>, Error> {
 
     let dir = BTDir{
         children : BTreeMap::new()
-    }
+    };
 
+    let mut start_piece = 0;
+    let mut start_index = 0;
     // Do validation
     for f_dict in files_list {
         let d = ipld_try_map(f_dict)?;
         let path_segs = d.get("path")?;
         let path_segs = ipld_try_list(path_segs)?;
+        let internal_dir: &mut BTDir = &mut dir;
         for (i, elem) in path_segs.iter().enumerate() {
-            let s = match p {
+            let s = match elem {
                 wac::Wac::String(s) => from_utf8(s)?,
                 _ => return Err(Error::msg("path segment not a string"))
-            }
-            match dir.children.get(s) {
-                Some(elem) => (),
-                None() => {
-                    dir.children.insert(s, )
-                }
+            };
+
+            if i != path_segs.len() -1 {
+                let next_dir = match internal_dir.children.get(s) {
+                    Some(elem) => elem,
+                    None => {
+                        let new_dir = BTDir{
+                            children : BTreeMap::new()
+                        };
+                        dir.children.insert(s, new_dir);
+                        new_dir
+                    }
+                };
+                internal_dir = next_dir
+            } else {
+                let file_len = d.get("length").and_then(|w| ipld_try_int(w).ok())?;
+                let num_pieces = file_len/piece_length_int;
+                let f = BTFile{
+                    start_offset: start_index,
+                    pieces : pieces[0..3],
+                    length: file_len,
+                };
             }
         }
         ipld_try_int(v_name)?;
@@ -360,8 +398,11 @@ fn load_adl_internal(input: &[u8]) -> Result<Box<Directory>, Error> {
     let d = Directory { 
         piece_len: piece_length_int as u64,
         pieces, 
-        files: files_map
-    }
+        files: files_map,
+        offset: todo!(),
+        length: todo!(),
+        dir,
+    };
 
     let db = Box::new(d);
     Ok(db)

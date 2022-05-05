@@ -24,3 +24,4 @@ integer-encoding = { version = "3.0.3"}
 num_enum = { version = "0.5.7" }
 hex = { version = "0.4" }
 wac = { path = "../wac" }
+example = { path = "../example" }
