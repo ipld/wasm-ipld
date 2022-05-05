@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 use std::convert::TryFrom;
-use std::io::{BufRead, Cursor};
+use std::io::{BufRead, Cursor, Write};
 
-use integer_encoding::VarIntReader;
+use integer_encoding::{VarIntReader, VarIntWriter};
 use libipld::{cid::Cid, error::Error};
-use num_enum::TryFromPrimitive;
+use num_enum::{TryFromPrimitive, IntoPrimitive};
 
 #[derive(Clone, PartialEq)]
 pub enum Wac {
@@ -28,7 +28,7 @@ pub enum Wac {
     Link(Cid),
 }
 
-#[derive(PartialEq, TryFromPrimitive)]
+#[derive(PartialEq, TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 pub enum WacCode {
     Null = 0,
@@ -116,5 +116,75 @@ fn from_cursor(cur: &mut Cursor<&[u8]>) -> Result<Wac, Error> {
             let c = Cid::read_bytes(cur)?;
             Ok(Wac::Link(c))
         }
+    }
+}
+
+pub fn into_bytes(input: Wac) -> Result<Vec<u8>, Error> {
+    let mut out : Vec<u8> = Vec::new();
+    into_bytes_inner(input, &mut out)?;
+    Ok(out)
+}
+
+fn into_bytes_inner(input : Wac, output : &mut Vec<u8>) -> Result<(), Error> {
+    match input {
+        Wac::Null => {
+            output.push(WacCode::Null.into());
+            Ok(())
+        },
+        Wac::Bool(b) => {
+            if b {
+                output.push(WacCode::True.into());
+            } else {
+                output.push(WacCode::False.into());
+            }
+            Ok(())
+        },
+        Wac::Integer(i) => {
+            if i > 0 {
+                output.push(WacCode::Int.into());
+                output.write_varint(i as i64)?;
+                Ok(())
+            } else {
+                output.push(WacCode::NInt.into());
+                output.write_varint((-i) as i64)?;
+                Ok(())
+            }
+        },
+        Wac::Float(_) => todo!(),
+        Wac::String(s) => {
+            output.push(WacCode::String.into());
+            output.write_varint(s.len())?;
+            output.write_all(&s)?;
+            Ok(())
+        },
+        Wac::Bytes(b) => {
+            output.push(WacCode::Bytes.into());
+            output.write_varint(b.len())?;
+            output.write_all(&b)?;
+            Ok(())
+        },
+        Wac::List(l) => {
+            output.push(WacCode::List.into());
+            output.write_varint(l.len())?;
+            for elem in l {
+                into_bytes_inner(elem, output)?;
+            }
+            Ok(())
+        },
+        Wac::Map(m) => {
+            output.push(WacCode::Map.into());
+            output.write_varint(m.len())?;
+
+            for (k, v) in m {
+                into_bytes_inner(Wac::Bytes(k), output)?;
+                into_bytes_inner(v, output)?;
+            }
+            Ok(())
+        },
+        Wac::Link(c) => {
+            output.push(WacCode::Link.into());
+            c.write_bytes(output)?;
+            Ok(())
+        },
     }
 }

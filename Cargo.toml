@@ -3,7 +3,9 @@
 members = [
     "bencode",
     "bt_filev1",
-    "wac"
+    "bt_dirv1",
+    "wac",
+    "example"
 ]
 
 [profile.release]
