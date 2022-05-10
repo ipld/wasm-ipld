@@ -17,7 +17,7 @@ pub fn myalloc(len: usize) -> *mut u8 {
 #[repr(C)]
 pub struct ValueOrError {
     pub err: *const ByteWrapper,
-    pub value: *mut u8
+    pub value: *mut u8,
 }
 
 impl ValueOrError {
@@ -28,7 +28,7 @@ impl ValueOrError {
             let msg_str = std::str::from_utf8(msg)?;
             return Err(libipld::error::Error::msg(msg_str));
         }
-        Ok(self.value)        
+        Ok(self.value)
     }
 }
 
@@ -42,54 +42,59 @@ pub struct ByteWrapper {
 pub struct ADLorWAC {
     err: *const ByteWrapper,
     adl_ptr: *const u8,
-    wac : *const ByteWrapper,
+    wac: *const ByteWrapper,
+}
+
+#[repr(C)]
+pub struct IterResp {
+    err: *const ByteWrapper,
+    key: *const ByteWrapper,
+    value_adl_ptr: *const u8,
+    val_wac: *const ByteWrapper,
 }
 
 #[repr(C)]
 pub struct BoolOrError {
     err: *const ByteWrapper,
-    value: bool
+    value: bool,
 }
 
-pub fn get_error(err : libipld::error::Error) -> *const ValueOrError {
-    let err_str = err.to_string().as_bytes().to_owned();
-    let bx = err_str.into_boxed_slice();
+pub fn byte_vec_to_byte_wrapper(b: Vec<u8>) -> *const ByteWrapper {
+    let bx = b.into_boxed_slice();
     let bx_len = bx.len() as u32;
     let bytes_ptr = Box::into_raw(bx) as *const u8;
 
+    Box::into_raw(Box::new(ByteWrapper {
+        msg_len: bx_len,
+        msg_ptr: bytes_ptr,
+    }))
+}
+
+pub fn get_error(err: libipld::error::Error) -> *const ValueOrError {
     let res = Box::new(ValueOrError {
-        value : std::ptr::null::<u8>() as *mut u8,
-        err : Box::into_raw(
-            Box::new(ByteWrapper {
-        msg_len : bx_len,
-        msg_ptr : bytes_ptr,
-    })
-        ),
+        value: std::ptr::null::<u8>() as *mut u8,
+        err: byte_vec_to_byte_wrapper(err.to_string().as_bytes().to_owned()),
     });
     Box::into_raw(res)
 }
 
-pub fn get_result_bytes(result : Result<Vec<u8>, libipld::error::Error>) -> *const ValueOrError {
+pub fn get_result_bytes(result: Result<Vec<u8>, libipld::error::Error>) -> *const ValueOrError {
     match result {
         Ok(v) => {
             let bx = v.into_boxed_slice();
             let bx_len = bx.len() as u32;
             let bytes_ptr = Box::into_raw(bx) as *const u8;
-            
+
             let res = Box::new(ValueOrError {
-                err : std::ptr::null(),
-                value : Box::into_raw(
-                    Box::new(ByteWrapper {
-                msg_len : bx_len,
-                msg_ptr : bytes_ptr,
-            })
-                ) as *mut u8,
+                err: std::ptr::null(),
+                value: Box::into_raw(Box::new(ByteWrapper {
+                    msg_len: bx_len,
+                    msg_ptr: bytes_ptr,
+                })) as *mut u8,
             });
             Box::into_raw(res)
         }
-        Err(err) => {
-            get_error(err)
-        },
+        Err(err) => get_error(err),
     }
 }
 
@@ -105,15 +110,37 @@ extern "C" {
     fn load_wac_block(cid_bytes: *const u8, cid_length: u8) -> *const ByteWrapper;
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn load_raw_block(cid_bytes: *const u8, cid_length: u8) -> *const ByteWrapper {
+    std::ptr::null()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_wac_block(cid_bytes: *const u8, cid_length: u8) -> *const ByteWrapper {
+    std::ptr::null()
+}
+
+pub unsafe fn load_raw_block_caller(blk_cid: Cid) -> Box<[u8]> {
+    let blk_cid_bytes = blk_cid.to_bytes();
+    let cidptr = blk_cid_bytes.as_ptr();
+
+    let blk_with_len_ptr = load_raw_block(cidptr, blk_cid_bytes.len() as u8);
+    let block_len = *(blk_with_len_ptr as *const u64);
+
+    let blk_ptr = (blk_with_len_ptr as usize + 8) as *const u8;
+    let block_data = ::std::slice::from_raw_parts(blk_ptr, block_len as usize);
+    block_data.to_owned().into_boxed_slice()
+}
+
 /*
 
 use std::any::Any;
 
-All returned data structures 
+All returned data structures
 
 /// Given a pointer to the start of a byte array of WAC data
 /// encode the data into the codec
-/// 
+///
 ///
 /// # Safety
 ///
@@ -163,7 +190,7 @@ fn decode_safe(blk : &[u8]) -> Result<Vec<u8>, libipld::error::Error> {
 
 /// Takes a pointer and length of a byte array containing WAC encoded data and returns
 /// a pointer to the ADL instance.
-/// 
+///
 /// # Safety
 ///
 /// This function assumes the block pointer has size have been allocated and filled.
@@ -177,7 +204,7 @@ pub unsafe fn load_adl(ptr: *mut u8, len: u32) -> *mut ValueOrError{
         Err(error) => {
             get_error(error) as *mut ValueOrError
         },
-        Ok(val) => {            
+        Ok(val) => {
             let res = Box::new(ValueOrError {
                 err : std::ptr::null(),
                 value : val as *mut u8,
@@ -196,33 +223,33 @@ fn load_adl_safe(blk : &[u8]) -> Result<*const u8, libipld::error::Error> {
 
 /// Takes a pointer to an ADL along with the offset and whence enum.
 /// It returns the offset from the start of the data.
-/// 
+///
 /// TODO: Allow returning an error
-/// 
+///
 /// Whence enum:
 /// 0 - seek relative to the origin of the file
 /// 1 - seek relative to the current offset
 /// 2 - seek relative to the end
-/// 
+///
 /// # Safety
 ///
 /// This function assumes the adlptr is to a valid adl node
 #[no_mangle]
 pub unsafe fn seek_adl(adlptr: *mut u8, offset: i64, whence: u32) -> u64 {
     // Get ADL
-    let mut fb = Box::from_raw(adlptr as *mut dyn Any);    
+    let mut fb = Box::from_raw(adlptr as *mut dyn Any);
 
     // Release ADL memory
     // Box::leak(fb);
-    
+
     0
 }
 
 /// Takes a pointer to an ADL as well as a buffer and its length
 /// and returns the number of bytes read.
-/// 
+///
 /// TODO: Allow returning an error
-/// 
+///
 /// # Safety
 ///
 /// This function assumes the adl pointer is to a valid adl node.
@@ -237,7 +264,7 @@ pub unsafe fn read_adl(adlptr: *mut u8, bufptr: *mut u8, bufleni: i32) -> u32 {
         bufleni.try_into().unwrap(),
         bufleni.try_into().unwrap(),
     );
-    
+
     // Read into the buffer
     //let res = read_adl_safer(fb.as_mut(), &mut buf);
     let res = 0;
@@ -253,11 +280,11 @@ pub unsafe fn read_adl(adlptr: *mut u8, bufptr: *mut u8, bufleni: i32) -> u32 {
 // Other Scalars (no "large versions")
 
 /// Takes a pointer to an ADL and returns a pointer to its WAC encoding
-/// 
+///
 /// TODO: Allow returning an error
 /// TODO: Is it worth having more efficient paths for bool, null and int? Seems unlikely given they're unlikely to be used
 /// TODO: Do we need BigInt? Should we bother with any of these until they're needed?
-/// 
+///
 /// # Safety
 ///
 /// This function assumes the adl pointer is to a valid adl node.
@@ -279,9 +306,9 @@ pub unsafe fn adl_get_generic(adlptr: *mut u8) -> *const u8 {
 // Recursive Types
 
 /// Takes a pointer to an ADL and returns its length.
-/// 
+///
 /// TODO: Should we allow returning an error?
-/// 
+///
 /// # Safety
 ///
 /// This function assumes the adlptr is to a valid adl node
@@ -292,9 +319,9 @@ pub unsafe fn adl_len(adlptr: *mut u8) -> i64 {
 
 /// Takes a pointer to an ADL as well as a buffer and its length
 /// and returns either an error, an ADL pointer, or WAC data.
-/// 
+///
 /// TODO: Allow returning an error
-/// 
+///
 /// # Safety
 ///
 /// This function assumes the adl pointer is to a valid adl node.
@@ -306,9 +333,9 @@ pub unsafe fn get_key(adlptr: *mut u8, key_ptr: *mut u8, key_len: i32) -> *const
 
 /// Takes a pointer to an ADL as well as a buffer and its length
 /// and returns either an error, an ADL pointer, or WAC data.
-/// 
+///
 /// TODO: Allow returning an error
-/// 
+///
 /// # Safety
 ///
 /// This function assumes the adl pointer is to a valid adl node.
@@ -319,7 +346,7 @@ pub unsafe fn get_index(adlptr: *mut u8, index: i32) -> *const ADLorWAC {
 }
 
 /// Takes a pointer to an ADL and returns a new map iterator over it.
-/// 
+///
 /// TODO: Should we allow returning an error?
 /// # Safety
 ///
@@ -343,7 +370,7 @@ pub unsafe fn iter_done(adlptr: *mut u8) -> *const BoolOrError {
 }
 
 /// Takes a pointer to an ADL and returns a new map iterator over it.
-/// 
+///
 /// TODO: Should we allow returning an error?
 /// # Safety
 ///
@@ -353,3 +380,5 @@ pub unsafe fn new_list_iter(adlptr: *mut u8) -> *const ValueOrError {
 }
 
 */
+
+use libipld::Cid;

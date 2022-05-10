@@ -1,7 +1,17 @@
-use std::{collections::{BTreeMap, btree_map::Iter}, convert::TryInto, str::from_utf8, any::{Any, TypeId}};
+use std::{
+    any::Any,
+    borrow::BorrowMut,
+    collections::{btree_map::Iter, BTreeMap},
+    convert::TryInto,
+    str::from_utf8,
+};
 
-use example::{ValueOrError, get_error, ADLorWAC};
-use libipld::{cid::CidGeneric, error::Error, Cid, Multihash};
+use example::{
+    byte_vec_to_byte_wrapper, get_error, load_raw_block_caller, ADLorWAC, ByteWrapper, IterResp,
+    ValueOrError,
+};
+use libipld::{cid::CidGeneric, error::Error, Multihash};
+use ouroboros::self_referencing;
 
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
 // allocator.
@@ -11,107 +21,123 @@ static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
 /// Takes a pointer and length of a byte array containing WAC encoded data and returns
 /// a pointer to the ADL instance.
-/// 
+///
 /// # Safety
 ///
 /// This function assumes the block pointer has size have been allocated and filled.
 #[no_mangle]
-pub unsafe fn load_adl(ptr: *mut u8, len: u32) -> *mut ValueOrError{
+pub unsafe fn load_adl(ptr: *mut u8, len: u32) -> *mut ValueOrError {
     let len = len as usize;
     let block_data = ::std::slice::from_raw_parts(ptr, len);
 
     let result_or_err = load_adl_internal(block_data);
     match result_or_err {
-        Err(error) => {
-            get_error(error) as *mut ValueOrError
-        },
-        Ok(val) => {            
+        Err(error) => get_error(error) as *mut ValueOrError,
+        Ok(val) => {
             let res = Box::new(ValueOrError {
-                err : std::ptr::null(),
-                value : val as *mut u8,
+                err: std::ptr::null(),
+                value: Box::into_raw(val) as *mut u8,
             });
             Box::into_raw(res)
-        },
+        }
     }
 }
 
 /// Takes a pointer to an ADL and returns its length.
-/// 
+///
 /// TODO: Should we allow returning an error?
-/// 
+///
 /// # Safety
 ///
 /// This function assumes the adlptr is to a valid adl node
 #[no_mangle]
 pub unsafe fn adl_len(adlptr: *mut u8) -> i64 {
-    let mut bx = Box::from_raw(adlptr as *mut dyn Any);    
-    let res = bx.downcast::<Directory>();
+    let bx = Box::from_raw(adlptr as *mut dyn Any);
+    let res = bx.downcast::<BTDir>();
     match res {
-        Ok(d) => d.length,
-        Err(_) => -1,
+        Ok(d) => {
+            let ret = d.children.len().try_into().unwrap();
+            Box::leak(d);
+            ret
+        }
+        Err(d) => {
+            Box::leak(d);
+            -1
+        }
     }
 }
 
 /// Takes a pointer to an ADL as well as a buffer and its length
 /// and returns either an error, an ADL pointer, or WAC data.
-/// 
+///
 /// TODO: Allow returning an error
-/// 
+///
 /// # Safety
 ///
 /// This function assumes the adl pointer is to a valid adl node.
 /// Also assumes the buffer pointer is to an allocated and usable buffer.
 #[no_mangle]
 pub unsafe fn get_key(adlptr: *mut u8, key_ptr: *mut u8, key_len: i32) -> *const ADLorWAC {
-    let mut bx = Box::from_raw(adlptr as *mut dyn Any);
-    
+    let bx = Box::from_raw(adlptr as *mut dyn Any);
+
     let key_len = key_len as usize;
     let key = ::std::slice::from_raw_parts(key_ptr, key_len);
-    let key_str = std::str::from_utf8(key);
 
-    let res = get_key_safe(bx, key_str);
+    let res = get_key_safe(bx, key);
     match res {
-        Ok(b) => {
+        Ok(b) => Box::into_raw(b),
+        Err(err) => {
+            let err_str = err.to_string().as_bytes().to_owned();
+            let bx = err_str.into_boxed_slice();
+            let bx_len = bx.len() as u32;
+            let bytes_ptr = Box::into_raw(bx) as *const u8;
+
+            let res = Box::new(ADLorWAC {
+                err: Box::into_raw(Box::new(ByteWrapper {
+                    msg_len: bx_len,
+                    msg_ptr: bytes_ptr,
+                })),
+                adl_ptr: std::ptr::null(),
+                wac: std::ptr::null(),
+            });
             Box::into_raw(res)
-        },
-        Err(error) => get_error(error) as *mut ValueOrError,
+        }
     }
 }
 
-fn get_key_safe(bx : Box<dyn Any>, key : &str) -> Result<Box<ADLorWAC>, libipld::error::Error> {
-    let dir_adl = bx.downcast::<Directory>().ok();
-    match dir_adl {
-        Some(adl) => {
-            return dir_get_key(adl.dir, key)
-        },
-        None => (),
-    }
+fn get_key_safe(
+    bx: Box<dyn Any>,
+    key_bytes: &[u8],
+) -> Result<Box<ADLorWAC>, libipld::error::Error> {
+    let key = std::str::from_utf8(key_bytes)?;
 
     let dir_adl = bx.downcast::<BTDir>().ok();
     match dir_adl {
-        Some(dir) => return dir_get_key(dir, key),
+        Some(dir) => return dir_get_key(*dir, key),
         None => (),
     }
 
     Err(libipld::error::Error::msg("type not valid"))
 }
 
-fn dir_get_key(dir : BTDir, key : &str) -> Result<Box<ADLorWAC>, libipld::error::Error> {
-    let val = dir.children.get(key).ok_or("not found")?;
-            let r = match val {
-                BTDirElem::Dir(d) => {
-                    let dbox = Box::new(d);
-                    let adl_ptr = std::ptr::null();
-                    let res = Box::new(ADLorWAC {
-                        err : std::ptr::null(),
-                        adl_ptr: Box::into_raw(dbox) as *const u8,
-                        wac: std::ptr::null(),
-                    });
-                    res
-                },
-                BTDirElem::File(f) => todo!(),
-            };
-            return Ok(r)
+fn dir_get_key(dir: BTDir, key: &str) -> Result<Box<ADLorWAC>, libipld::error::Error> {
+    let val = dir
+        .children
+        .get(key)
+        .ok_or(libipld::error::Error::msg("not found"))?;
+    let r = match val {
+        BTDirElem::Dir(d) => {
+            let dbox: Box<dyn Any> = Box::new(d);
+            let res = Box::new(ADLorWAC {
+                err: std::ptr::null(),
+                adl_ptr: Box::into_raw(dbox) as *const u8,
+                wac: std::ptr::null(),
+            });
+            res
+        }
+        BTDirElem::File(f) => todo!(),
+    };
+    return Ok(r);
 }
 
 /// # Safety
@@ -119,17 +145,17 @@ fn dir_get_key(dir : BTDir, key : &str) -> Result<Box<ADLorWAC>, libipld::error:
 /// This function assumes the adlptr is to a valid adl node
 #[no_mangle]
 pub unsafe fn new_map_iter(adlptr: *mut u8) -> *const u8 {
-    let mut fb = Box::from_raw(adlptr as *mut Directory);
+    let bx = Box::from_raw(adlptr as *mut dyn Any);
+    let dir_adl = bx.downcast::<BTDir>().expect("not a map");
 
-    let mut iter = DirectoryIter{
-        directory : fb,
-        iter : fb.files.iter()
-    }
+    let iter = DirectoryIter {
+        iter: dir_adl.children.iter(),
+    };
 
-    let iterBox = Box::new(iter);
+    Box::leak(dir_adl);
+    let iterBox: Box<dyn Any> = Box::new(iter);
 
-    Box::leak(fb);
-    Box::into_raw(iterBox);
+    Box::into_raw(iterBox) as *const u8
 }
 
 // TODO: Need to figure out what to do for ADL functions that return Nodes
@@ -141,44 +167,129 @@ pub unsafe fn new_map_iter(adlptr: *mut u8) -> *const u8 {
 //
 //     Idea for now: Return (Ptr or WAC)
 
-#[repr(C)]
-struct ReturnWithLength {
-    ptr : *const u8,
-    len : u32,
-}
+/// # Safety
+///
+/// This function assumes the adlptr is to a valid adl node
+#[no_mangle]
+pub unsafe fn iter_next(adlptr: *mut u8) -> *const IterResp {
+    let bx = Box::from_raw(adlptr as *mut dyn Any);
+    let mut dir_iter_adl = bx.downcast::<DirectoryIter>().expect("not a map iterator");
 
-#[repr(C)]
-struct ReturnError {
-    msg : ReturnWithLength
-}
+    let dir_iter = &mut *dir_iter_adl;
+    let next_item = dir_iter.iter.next();
+    let ret = match next_item {
+        Some(kv_pair) => {
+            let val_bx = Box::new(kv_pair.1);
+            let res = Box::new(IterResp {
+                key: byte_vec_to_byte_wrapper(kv_pair.0.to_string().into_bytes()),
+                value_adl_ptr: Box::into_raw(val_bx) as *const u8,
+                val_wac: std::ptr::null(),
+                err: byte_vec_to_byte_wrapper("end of iterator".as_bytes().to_owned()),
+            });
+            res
+        }
+        None => {
+            let res = Box::new(IterResp {
+                key: std::ptr::null(),
+                value_adl_ptr: std::ptr::null(),
+                val_wac: std::ptr::null(),
+                err: byte_vec_to_byte_wrapper("end of iterator".as_bytes().to_owned()),
+            });
+            res
+        }
+    };
 
-#[repr(C)]
-struct NodeReturn {
-    adl_ptr : *const u8,
-    kind : u8,
-    wac : ReturnWithLength,
-    error : ReturnError,
+    Box::leak(dir_iter_adl);
+    Box::into_raw(ret)
 }
 
 /// # Safety
 ///
 /// This function assumes the adlptr is to a valid adl node
 #[no_mangle]
-pub unsafe fn iter_next(adlptr: *mut u8) -> *const u8 {
-    let mut fb = Box::from_raw(adlptr as *mut DirectoryIter);
-    
-    // TODO: Deal with end of iter
-    let n = fb.iter.next()?;
+pub unsafe fn new_bytes_reader(adlptr: *mut u8) -> *const u8 {
+    let bx = Box::from_raw(adlptr as *mut dyn Any);
+    let file_adl = bx.downcast::<BTFile>().expect("not a file");
 
-    let new_file_map<Vec<u8>, wac::Wac> = BTreeMap::new();
-    new_file_map.insert("", value)
-    wac::Wac::Map(new_file_map)
+    let reader = FileReader {
+        file: file_adl.as_ref(),
+        offset: 0,
+        length: file_adl.length,
+    };
 
-    //TODO: length
-    let out = wac::into_bytes(input)?.into_boxed_slice();
+    let reader_box: Box<dyn Any> = Box::new(reader);
 
-    Box::leak(fb);
-    Box::into_raw(out);
+    Box::leak(file_adl);
+    Box::into_raw(reader_box) as *const u8
+}
+
+struct FileReader {
+    file: *const BTFile,
+    offset: u64,
+    length: u64,
+}
+
+// Bytes
+
+/// Takes a pointer to an ADL along with the offset and whence enum.
+/// It returns the offset from the start of the data.
+///
+/// TODO: Allow returning an error
+///
+/// Whence enum:
+/// 0 - seek relative to the origin of the file
+/// 1 - seek relative to the current offset
+/// 2 - seek relative to the end
+///
+/// # Safety
+///
+/// This function assumes the adlptr is to a valid adl node
+#[no_mangle]
+pub unsafe fn seek_adl(adlptr: *mut u8, offset: i64, whence: u32) -> u64 {
+    // Get ADL
+    let bx = Box::from_raw(adlptr as *mut dyn Any);
+    let mut file_adl = bx.downcast::<FileReader>().expect("not a file");
+    let res = seek_adl_safe(file_adl.as_mut(), offset, whence);
+
+    // Release ADL memory
+    Box::leak(file_adl);
+    res
+}
+
+/// Takes a pointer to an ADL as well as a buffer and its length
+/// and returns the number of bytes read.
+///
+/// TODO: Allow returning an error
+///
+/// # Safety
+///
+/// This function assumes the adl pointer is to a valid adl node.
+/// Also assumes the buffer pointer is to an allocated and usable buffer.
+#[no_mangle]
+pub unsafe fn read_adl(adlptr: *mut u8, bufptr: *mut u8, bufleni: i32) -> u32 {
+    // Get ADL
+    let bx = Box::from_raw(adlptr as *mut dyn Any);
+    let mut file_adl = bx.downcast::<&mut FileReader>().expect("not a file");
+
+    // Get buffer
+    let mut buf = Vec::from_raw_parts(
+        bufptr,
+        bufleni.try_into().unwrap(),
+        bufleni.try_into().unwrap(),
+    );
+
+    let fi_ptr = file_adl.file;
+    let fi = &*fi_ptr;
+    // Read into the buffer
+    let res = read_adl_safer(&mut file_adl, fi, &mut buf);
+
+    // Release ADL
+    Box::leak(file_adl);
+
+    // Release the buffer
+    let b_buf = Box::new(buf);
+    Box::leak(b_buf);
+    res
 }
 
 fn seek_adl_safe(f: &mut FileReader, offset: i64, whence: u32) -> u64 {
@@ -198,28 +309,7 @@ fn seek_adl_safe(f: &mut FileReader, offset: i64, whence: u32) -> u64 {
     f.offset
 }
 
-/// # Safety
-///
-/// This function assumes the adl pointer is to a valid adl node.
-/// Also assumes the buffer pointer is to an allocated and usable buffer.
-#[no_mangle]
-pub unsafe fn read_adl(adlptr: *mut u8, bufptr: *mut u8, bufleni: i32) -> u32 {
-    let mut fb = Box::from_raw(adlptr as *mut FileReader);
-
-    let mut buf = Vec::from_raw_parts(
-        bufptr,
-        bufleni.try_into().unwrap(),
-        bufleni.try_into().unwrap(),
-    );
-    let res = read_adl_safer(fb.as_mut(), &mut buf);
-
-    Box::leak(fb);
-    let b_buf = Box::new(buf);
-    Box::leak(b_buf);
-    res
-}
-
-fn read_adl_safer(f: &mut FileReader, buf: &mut [u8]) -> u32 {
+fn read_adl_safer(f: &mut FileReader, file_info: &BTFile, buf: &mut [u8]) -> u32 {
     let buflen = buf.len() as u32;
 
     // skip if past the end
@@ -231,26 +321,23 @@ fn read_adl_safer(f: &mut FileReader, buf: &mut [u8]) -> u32 {
     let mut piece_num = 0;
     let mut bufrem = buflen;
 
-    while at < f.length && bufrem > 0 {
-        if f.offset > at + f.piece_len {
-            at += f.piece_len;
-            piece_num += 1;
-            continue;
-        }
+    // handle the first block
+    piece_num = ((f.offset + file_info.start_offset) / file_info.piece_length) as usize;
+    let start_delta = ((f.offset + file_info.start_offset) % file_info.piece_length) as usize;
+    at = f.offset;
 
+    while at < f.length && bufrem > 0 {
         // fastforward the first one if needed.
-        let blk_cid = f.pieces[piece_num];
+        let blk_cid = file_info.pieces[piece_num];
         let block_data: Box<[u8]>;
 
         unsafe {
-            block_data = load_block_wrapper(blk_cid);
+            block_data = load_raw_block_caller(blk_cid);
         }
 
-        if at < f.offset {
-            let delta = (f.offset - at) as usize;
-
+        if at == f.offset {
             let mut num_to_copy = bufrem;
-            let block_rem = (block_data.len() - (delta as usize)) as u32;
+            let block_rem = (block_data.len() - start_delta) as u32;
             if num_to_copy > block_rem {
                 num_to_copy = block_rem;
             }
@@ -258,7 +345,7 @@ fn read_adl_safer(f: &mut FileReader, buf: &mut [u8]) -> u32 {
 
             let buf_offset: usize = (buflen - bufrem).try_into().unwrap();
             buf[(buf_offset as usize)..(buf_offset + numcpy)]
-                .copy_from_slice(&block_data[(delta as usize)..(delta + numcpy)]);
+                .copy_from_slice(&block_data[start_delta..(start_delta + numcpy)]);
             bufrem -= numcpy as u32;
             at = numcpy as u64 + f.offset;
         } else {
@@ -319,8 +406,8 @@ fn load_adl_internal(input: &[u8]) -> Result<Box<dyn Any>, Error> {
     let node_map = ipld_try_map(node)?;
 
     // assert length missing
-    if node_map.contains_key("length") {
-        return libipld::error::Error::msg("length not in node")
+    if node_map.contains_key("length".as_bytes()) {
+        return Err(libipld::error::Error::msg("length not in node"));
     }
 
     let pieces_node = node_map
@@ -347,11 +434,13 @@ fn load_adl_internal(input: &[u8]) -> Result<Box<dyn Any>, Error> {
         pieces.push(cid);
     }
 
-    let files_list = node_map.get("files")?;
+    let files_list = node_map
+        .get("files".as_bytes())
+        .ok_or_else(|| libipld::error::Error::msg("files not in node"))?;
     let files_list = ipld_try_list(files_list.to_owned())?;
 
-    let dir = BTDir{
-        children : BTreeMap::new()
+    let dir = &mut BTDir {
+        children: BTreeMap::new(),
     };
 
     let mut start_piece = 0;
@@ -359,81 +448,100 @@ fn load_adl_internal(input: &[u8]) -> Result<Box<dyn Any>, Error> {
     // Do validation
     for f_dict in files_list {
         let d = ipld_try_map(f_dict)?;
-        let path_segs = d.get("path")?;
-        let path_segs = ipld_try_list(path_segs)?;
-        let internal_dir: &mut BTDir = &mut dir;
+        let path_segs = d
+            .get("path".as_bytes())
+            .ok_or_else(|| libipld::error::Error::msg("path not in node"))?;
+        let path_segs = ipld_try_list(path_segs.to_owned())?;
+        let mut internal_dir: &mut BTDir = dir;
         for (i, elem) in path_segs.iter().enumerate() {
             let s = match elem {
                 wac::Wac::String(s) => from_utf8(s)?,
-                _ => return Err(Error::msg("path segment not a string"))
+                _ => return Err(Error::msg("path segment not a string")),
             };
 
-            if i != path_segs.len() -1 {
-                let next_dir = match internal_dir.children.get(s) {
-                    Some(elem) => elem,
-                    None => {
-                        let new_dir = BTDir{
-                            children : BTreeMap::new()
-                        };
-                        dir.children.insert(s, new_dir);
-                        new_dir
+            if i != path_segs.len() - 1 {
+                let next_dir = internal_dir
+                    .children
+                    .entry(s.to_owned())
+                    .or_insert_with(|| {
+                        BTDirElem::Dir(BTDir {
+                            children: BTreeMap::new(),
+                        })
+                    });
+                match next_dir {
+                    BTDirElem::Dir(nd) => {
+                        internal_dir = nd;
                     }
-                };
-                internal_dir = next_dir
+                    BTDirElem::File(_) => {
+                        return Err(libipld::error::Error::msg(
+                            "cannot have file and directory with the same name",
+                        ))
+                    }
+                }
             } else {
-                let file_len = d.get("length").and_then(|w| ipld_try_int(w).ok())?;
-                let num_pieces = file_len/piece_length_int;
-                let f = BTFile{
-                    start_offset: start_index,
-                    pieces : pieces[0..3],
-                    length: file_len,
+                let file_len = d
+                    .get("length".as_bytes())
+                    .and_then(|w| ipld_try_int(w.to_owned()).ok())
+                    .ok_or_else(|| libipld::error::Error::msg("file length not found"))?;
+
+                let first_blk_len = piece_length_int - start_index;
+                let mut num_pieces = 1;
+                let mut new_starting_index = 0;
+                if file_len >= first_blk_len {
+                    num_pieces += ((file_len - first_blk_len) / piece_length_int) as usize;
+                    let rem = (file_len - first_blk_len) % piece_length_int;
+                    if rem > 0 {
+                        num_pieces += 1;
+                        new_starting_index = rem;
+                    }
+                } else {
+                    new_starting_index = start_index + file_len;
+                }
+
+                let f = BTFile {
+                    start_offset: start_index as u64,
+                    pieces: pieces[start_piece..start_piece + num_pieces].to_vec(),
+                    length: file_len as u64,
+                    piece_length: piece_length_int as u64,
                 };
+                start_index = new_starting_index;
+                if internal_dir
+                    .children
+                    .insert(s.to_string(), BTDirElem::File(f))
+                    .is_some()
+                {
+                    return Err(libipld::error::Error::msg(
+                        "cannot have a file name repeated",
+                    ));
+                }
             }
         }
-        ipld_try_int(v_name)?;
-
-        dir.children.insert(k, v_name)?;
     }
 
-    let d = Directory { 
-        piece_len: piece_length_int as u64,
-        pieces, 
-        files: files_map,
-        offset: todo!(),
-        length: todo!(),
-        dir,
-    };
+    let d = BTDir { children: todo!() };
 
-    let db = Box::new(d);
+    let db: Box<dyn Any> = Box::new(d);
     Ok(db)
 }
 
 enum BTDirElem {
     Dir(BTDir),
-    File(BTFile)
+    File(BTFile),
 }
 
 struct BTDir {
-    children : BTreeMap<String, BTDirElem>
+    children: BTreeMap<String, BTDirElem>,
 }
 
 struct BTFile {
     start_offset: u64,
     pieces: Vec<libipld::Cid>,
     length: u64,
+    piece_length: u64,
 }
 
-struct Directory {
-    offset: u64,
-    length: u64,
-    piece_len: u64,
-    pieces: Vec<libipld::Cid>,
-    dir : BTDir
-}
-
-struct DirectoryIter {
-    directory : &Directory,
-    iter : Iter<Vec<u8>, wac::Wac>
+struct DirectoryIter<'a> {
+    iter: Iter<'a, String, BTDirElem>,
 }
 
 #[cfg(test)]

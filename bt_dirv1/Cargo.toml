@@ -23,3 +23,4 @@ libipld = {version = "0.13.1"}
 wac = { path = "../wac" }
 example = { path = "../example" }
 hex = { version = "0.4" }
+ouroboros = {version = "0.15.0" }

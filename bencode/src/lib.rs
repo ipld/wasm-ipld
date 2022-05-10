@@ -14,7 +14,7 @@ static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
 /// Given a pointer to the start of a byte array of WAC data
 /// encode the data into the codec
-/// 
+///
 ///
 /// # Safety
 ///
@@ -24,7 +24,7 @@ pub unsafe fn encode(ptr: *mut u8, len: u32) -> *const ValueOrError {
     let len = len as usize;
     let data = ::std::slice::from_raw_parts(ptr, len);
 
-    let result : Result<Vec<u8>, libipld::error::Error> = wac_to_bencode_block(data);
+    let result: Result<Vec<u8>, libipld::error::Error> = wac_to_bencode_block(data);
 
     get_result_bytes(result)
 }
@@ -171,7 +171,7 @@ fn get_int(input: &[u8], mut cursor: usize, terminator: u8) -> Result<(usize, us
 mod tests {
     use std::convert::TryInto;
 
-    use example::{myalloc, ValueOrError, ByteWrapper};
+    use example::{myalloc, ByteWrapper, ValueOrError};
 
     use crate::{decode, encode};
 

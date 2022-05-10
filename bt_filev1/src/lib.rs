@@ -1,5 +1,5 @@
+use example::{self, get_error, ValueOrError};
 use std::{collections::BTreeMap, convert::TryInto};
-use example::{self, ValueOrError, get_error};
 
 use libipld::{cid::CidGeneric, error::Error, Cid, Multihash};
 
@@ -72,30 +72,27 @@ fn load_block_err(c: Cid, block_len: &mut u32) -> Result<Vec<u8>, Error> {
     Ok(block_data)
 }
 
-
 /// Takes a pointer and length of a byte array containing WAC encoded data and returns
 /// a pointer to the ADL instance.
-/// 
+///
 /// # Safety
 ///
 /// This function assumes the block pointer has size have been allocated and filled.
 #[no_mangle]
-pub unsafe fn load_adl(ptr: *mut u8, len: u32) -> *mut ValueOrError{
+pub unsafe fn load_adl(ptr: *mut u8, len: u32) -> *mut ValueOrError {
     let len = len as usize;
     let block_data = ::std::slice::from_raw_parts(ptr, len);
 
     let result_or_err = load_adl_internal(block_data);
     match result_or_err {
-        Err(error) => {
-            get_error(error) as *mut ValueOrError
-        },
-        Ok(val) => {            
+        Err(error) => get_error(error) as *mut ValueOrError,
+        Ok(val) => {
             let res = Box::new(ValueOrError {
-                err : std::ptr::null(),
-                value : val as *mut u8,
+                err: std::ptr::null(),
+                value: val as *mut u8,
             });
             Box::into_raw(res)
-        },
+        }
     }
 }
 
@@ -103,14 +100,14 @@ pub unsafe fn load_adl(ptr: *mut u8, len: u32) -> *mut ValueOrError{
 
 /// Takes a pointer to an ADL along with the offset and whence enum.
 /// It returns the offset from the start of the data.
-/// 
+///
 /// TODO: Allow returning an error
-/// 
+///
 /// Whence enum:
 /// 0 - seek relative to the origin of the file
 /// 1 - seek relative to the current offset
 /// 2 - seek relative to the end
-/// 
+///
 /// # Safety
 ///
 /// This function assumes the adlptr is to a valid adl node
@@ -127,9 +124,9 @@ pub unsafe fn seek_adl(adlptr: *mut u8, offset: i64, whence: u32) -> u64 {
 
 /// Takes a pointer to an ADL as well as a buffer and its length
 /// and returns the number of bytes read.
-/// 
+///
 /// TODO: Allow returning an error
-/// 
+///
 /// # Safety
 ///
 /// This function assumes the adl pointer is to a valid adl node.
@@ -326,7 +323,11 @@ mod tests {
 
         unsafe {
             let adl_res_ptr = load_adl(wac_file_root.as_mut_ptr(), wac_file_root.len() as u32);
-            let adl_ptr = adl_res_ptr.as_ref().unwrap().to_result().expect("could not load adl");            
+            let adl_ptr = adl_res_ptr
+                .as_ref()
+                .unwrap()
+                .to_result()
+                .expect("could not load adl");
             let mut buffer: Vec<u8> = Vec::new();
             buffer.resize(40, 0);
 
@@ -344,7 +345,11 @@ mod tests {
 
         unsafe {
             let adl_res_ptr = load_adl(wac_file_root.as_mut_ptr(), wac_file_root.len() as u32);
-            let adl_ptr = adl_res_ptr.as_ref().unwrap().to_result().expect("could not load adl");            
+            let adl_ptr = adl_res_ptr
+                .as_ref()
+                .unwrap()
+                .to_result()
+                .expect("could not load adl");
 
             let mut buffer: Vec<u8> = Vec::new();
             buffer.resize(20, 0);
@@ -367,7 +372,11 @@ mod tests {
 
         unsafe {
             let adl_res_ptr = load_adl(wac_file_root.as_mut_ptr(), wac_file_root.len() as u32);
-            let adl_ptr = adl_res_ptr.as_ref().unwrap().to_result().expect("could not load adl");            
+            let adl_ptr = adl_res_ptr
+                .as_ref()
+                .unwrap()
+                .to_result()
+                .expect("could not load adl");
 
             let mut buffer: Vec<u8> = Vec::new();
             buffer.resize(20, 0);
