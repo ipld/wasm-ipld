@@ -101,6 +101,7 @@ fn decoder_inner(
                     .ok_or_else(|| Error::msg("invalid list"))?
                     == &b'e'
                 {
+                    cursor += 1;
                     output.write_varint(num_elems)?;
                     output.write_all(&buf)?;
                     return Ok((cursor, WacCode::List));
@@ -118,6 +119,7 @@ fn decoder_inner(
             let mut num_elems: usize = 0;
             loop {
                 if input.get(cursor).ok_or_else(|| Error::msg("invalid map"))? == &b'e' {
+                    cursor += 1;
                     output.write_varint(num_elems)?;
                     output.write_all(&buf)?;
                     return Ok((cursor, WacCode::Map));
@@ -198,6 +200,14 @@ mod tests {
                 9, 2, 6, 3, 98, 97, 114, 6, 4, 115, 112, 97, 109, 6, 3, 102, 111, 111, 3, 42,
             ],
         )
+    }
+
+    #[test]
+    fn test_fixture() {
+        let block = include_bytes!("../../bittorrent-fixtures/animalsih");
+        let fixture_wac = convert_block(block, decode);
+        let hex_fixture_wac = hex::encode(fixture_wac);
+        assert_eq!(hex_fixture_wac, "foobar")
     }
 
     fn test_equality(bencode_block: &str, wac_block: &[u8]) {

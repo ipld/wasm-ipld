@@ -40,23 +40,23 @@ pub struct ByteWrapper {
 
 #[repr(C)]
 pub struct ADLorWAC {
-    err: *const ByteWrapper,
-    adl_ptr: *const u8,
-    wac: *const ByteWrapper,
+    pub err: *const ByteWrapper,
+    pub adl_ptr: *const u8,
+    pub wac: *const ByteWrapper,
 }
 
 #[repr(C)]
 pub struct IterResp {
-    err: *const ByteWrapper,
-    key: *const ByteWrapper,
-    value_adl_ptr: *const u8,
-    val_wac: *const ByteWrapper,
+    pub err: *const ByteWrapper,
+    pub key: *const ByteWrapper,
+    pub value_adl_ptr: *const u8,
+    pub val_wac: *const ByteWrapper,
 }
 
 #[repr(C)]
 pub struct BoolOrError {
-    err: *const ByteWrapper,
-    value: bool,
+    pub err: *const ByteWrapper,
+    pub value: bool,
 }
 
 pub fn byte_vec_to_byte_wrapper(b: Vec<u8>) -> *const ByteWrapper {
@@ -112,12 +112,34 @@ extern "C" {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn load_raw_block(cid_bytes: *const u8, cid_length: u8) -> *const ByteWrapper {
-    std::ptr::null()
+    let c_bytes;
+    unsafe {
+        c_bytes = ::std::slice::from_raw_parts(cid_bytes, cid_length as usize);
+    }
+    let cr = Cid::read_bytes(c_bytes).expect("could not load cid");
+
+    let m = global_blocks::GLOBAL_BLOCKSTORE.lock().unwrap();
+    let val = m.get(&cr).expect("could not load block");
+
+    byte_vec_to_byte_wrapper(val.to_vec())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn load_wac_block(cid_bytes: *const u8, cid_length: u8) -> *const ByteWrapper {
     std::ptr::null()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod global_blocks {
+    use std::{collections::HashMap, sync::Mutex};
+
+    use libipld::Cid;
+    use once_cell::sync::Lazy;
+
+    pub static GLOBAL_BLOCKSTORE: Lazy<Mutex<HashMap<Cid, &[u8]>>> = Lazy::new(|| {
+        let mut m = HashMap::new();
+        Mutex::new(m)
+    });
 }
 
 pub unsafe fn load_raw_block_caller(blk_cid: Cid) -> Box<[u8]> {

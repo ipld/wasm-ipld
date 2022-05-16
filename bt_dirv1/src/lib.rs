@@ -125,19 +125,23 @@ fn dir_get_key(dir: BTDir, key: &str) -> Result<Box<ADLorWAC>, libipld::error::E
         .children
         .get(key)
         .ok_or(libipld::error::Error::msg("not found"))?;
-    let r = match val {
-        BTDirElem::Dir(d) => {
-            let dbox: Box<dyn Any> = Box::new(d);
-            let res = Box::new(ADLorWAC {
-                err: std::ptr::null(),
-                adl_ptr: Box::into_raw(dbox) as *const u8,
-                wac: std::ptr::null(),
-            });
-            res
+
+    let val_ptr = match val {
+        BTDirElem::File(f) => {
+            let ptr: *const BTFile = f;
+            ptr as *const u8
         }
-        BTDirElem::File(f) => todo!(),
+        BTDirElem::Dir(d) => {
+            let ptr: *const BTDir = d;
+            ptr as *const u8
+        }
     };
-    return Ok(r);
+
+    Ok(Box::new(ADLorWAC {
+        err: std::ptr::null(),
+        adl_ptr: val_ptr,
+        wac: std::ptr::null(),
+    }))
 }
 
 /// # Safety
@@ -148,14 +152,20 @@ pub unsafe fn new_map_iter(adlptr: *mut u8) -> *const u8 {
     let bx = Box::from_raw(adlptr as *mut dyn Any);
     let dir_adl = bx.downcast::<BTDir>().expect("not a map");
 
+    let mut li: Vec<(*const String, *const BTDirElem)> = Vec::new();
+    for (k, v) in &dir_adl.children {
+        li.push((k, v))
+    }
+
     let iter = DirectoryIter {
-        iter: dir_adl.children.iter(),
+        items: li,
+        index: 0,
     };
 
     Box::leak(dir_adl);
-    let iterBox: Box<dyn Any> = Box::new(iter);
+    let iter_box: Box<dyn Any> = Box::new(iter);
 
-    Box::into_raw(iterBox) as *const u8
+    Box::into_raw(iter_box) as *const u8
 }
 
 // TODO: Need to figure out what to do for ADL functions that return Nodes
@@ -176,13 +186,25 @@ pub unsafe fn iter_next(adlptr: *mut u8) -> *const IterResp {
     let mut dir_iter_adl = bx.downcast::<DirectoryIter>().expect("not a map iterator");
 
     let dir_iter = &mut *dir_iter_adl;
-    let next_item = dir_iter.iter.next();
+    let next_item = dir_iter.items.get(dir_iter.index + 1);
     let ret = match next_item {
         Some(kv_pair) => {
-            let val_bx = Box::new(kv_pair.1);
+            let kb = kv_pair.0.as_ref().unwrap().to_owned().into_bytes();
+            let elem = &*kv_pair.1;
+            let ptr = match elem {
+                BTDirElem::Dir(d) => {
+                    let ptr: *const BTDir = d;
+                    ptr as *const u8
+                }
+                BTDirElem::File(f) => {
+                    let ptr: *const BTFile = f;
+                    ptr as *const u8
+                }
+            };
+
             let res = Box::new(IterResp {
-                key: byte_vec_to_byte_wrapper(kv_pair.0.to_string().into_bytes()),
-                value_adl_ptr: Box::into_raw(val_bx) as *const u8,
+                key: byte_vec_to_byte_wrapper(kb),
+                value_adl_ptr: ptr,
                 val_wac: std::ptr::null(),
                 err: byte_vec_to_byte_wrapper("end of iterator".as_bytes().to_owned()),
             });
@@ -439,7 +461,7 @@ fn load_adl_internal(input: &[u8]) -> Result<Box<dyn Any>, Error> {
         .ok_or_else(|| libipld::error::Error::msg("files not in node"))?;
     let files_list = ipld_try_list(files_list.to_owned())?;
 
-    let dir = &mut BTDir {
+    let mut dir = BTDir {
         children: BTreeMap::new(),
     };
 
@@ -452,7 +474,7 @@ fn load_adl_internal(input: &[u8]) -> Result<Box<dyn Any>, Error> {
             .get("path".as_bytes())
             .ok_or_else(|| libipld::error::Error::msg("path not in node"))?;
         let path_segs = ipld_try_list(path_segs.to_owned())?;
-        let mut internal_dir: &mut BTDir = dir;
+        let mut internal_dir = dir.borrow_mut();
         for (i, elem) in path_segs.iter().enumerate() {
             let s = match elem {
                 wac::Wac::String(s) => from_utf8(s)?,
@@ -518,9 +540,7 @@ fn load_adl_internal(input: &[u8]) -> Result<Box<dyn Any>, Error> {
         }
     }
 
-    let d = BTDir { children: todo!() };
-
-    let db: Box<dyn Any> = Box::new(d);
+    let db: Box<dyn Any> = Box::new(dir);
     Ok(db)
 }
 
@@ -540,31 +560,79 @@ struct BTFile {
     piece_length: u64,
 }
 
-struct DirectoryIter<'a> {
-    iter: Iter<'a, String, BTDirElem>,
+struct DirectoryIter {
+    items: Vec<(*const String, *const BTDirElem)>,
+    index: usize,
 }
 
 #[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
-    use crate::{load_adl, read_adl, seek_adl};
+    use std::str::FromStr;
 
-    #[test]
-    fn test_full_read() {
-        let hex_wac_file_root = "090406046e616d65060466696c65060c7069656365206c656e677468031e0606706965636573062838666b8ba500faa5c2406f4575d42a92379844c245dfb79d668374f6578b3128746dce59b7a02e8006066c656e6774680328";
-        let mut wac_file_root = hex::decode(hex_wac_file_root).unwrap();
+    use example::ByteWrapper;
+    use libipld::Cid;
 
-        unsafe {
-            let adl_ptr = load_adl(wac_file_root.as_mut_ptr(), wac_file_root.len());
-            let mut buffer: Vec<u8> = Vec::new();
-            buffer.resize(40, 0);
+    use crate::{get_key, load_adl, new_bytes_reader, read_adl, seek_adl};
 
-            let num_read = read_adl(adl_ptr as *mut u8, buffer.as_mut_ptr(), buffer.len() as i32);
-            assert_eq!(num_read, 40);
-            assert_eq!(buffer.as_slice()[0..30], [0x61; 30]);
-            assert_eq!(buffer.as_slice()[30..], [0x62; 10]);
+    unsafe fn assert_no_err(err: *const ByteWrapper) {
+        if !err.is_null() {
+            let e = &*err;
+            let err_slice = std::slice::from_raw_parts(e.msg_ptr, e.msg_len.try_into().unwrap());
+            let err_str = std::str::from_utf8(err_slice).expect("non-utf8 error");
+            panic!("{}", err_str)
         }
     }
 
+    #[test]
+    fn test_dir_elem() {
+        {
+            let mut m = example::global_blocks::GLOBAL_BLOCKSTORE.lock().unwrap();
+            let block1 = include_bytes!("../../bittorrent-fixtures/animals-fixtures/blocks/f0155111413da56fd10d288769fdea62d464572c5f16e967d.blk");
+            let c1 = Cid::from_str("f0155111413da56fd10d288769fdea62d464572c5f16e967d").unwrap();
+            m.insert(c1, block1);
+            let block1 = include_bytes!("../../bittorrent-fixtures/animals-fixtures/blocks/f01551114dc462b4d35419ca9230d69d758f0832a30959baa.blk");
+            let c1 = Cid::from_str("f01551114dc462b4d35419ca9230d69d758f0832a30959baa").unwrap();
+            m.insert(c1, block1);
+        }
+        let hex_wac_file_root = "0904060566696c65730802090206066c656e6774680392d510060470617468080106094b6f616c612e6a7067090206066c656e67746803a6dc050604706174680801060970616e64612e6a706706046e616d650607616e696d616c73060c7069656365206c656e677468038080100606706965636573062813da56fd10d288769fdea62d464572c5f16e967ddc462b4d35419ca9230d69d758f0832a30959baa";
+        let mut wac_file_root = hex::decode(hex_wac_file_root).unwrap();
+
+        unsafe {
+            let adl_ptr_or_err = &*load_adl(
+                wac_file_root.as_mut_ptr(),
+                wac_file_root.len().try_into().unwrap(),
+            );
+            assert_no_err(adl_ptr_or_err.err);
+            let adl_ptr = adl_ptr_or_err.value;
+
+            let lookup_key = "Koala.jpg";
+            let lookup_res = &*get_key(
+                adl_ptr,
+                lookup_key.as_ptr() as *mut u8,
+                lookup_key.len().try_into().unwrap(),
+            );
+            assert_no_err(lookup_res.err);
+
+            let file_reader_ptr = new_bytes_reader(lookup_res.adl_ptr as *mut u8);
+
+            let mut buffer: Vec<u8> = Vec::new();
+            buffer.resize(1024 * 1024, 0);
+
+            let num_read = read_adl(
+                file_reader_ptr as *mut u8,
+                buffer.as_mut_ptr(),
+                buffer.len() as i32,
+            );
+            assert_ne!(num_read, 40);
+
+            let raw_file =
+                include_bytes!("../../bittorrent-fixtures/animals-fixtures/animals/Koala.jpg");
+            assert_eq!(buffer.as_slice(), raw_file);
+        }
+    }
+
+    /*
     #[test]
     fn test_partial_reads() {
         let hex_wac_file_root = "090406046e616d65060466696c65060c7069656365206c656e677468031e0606706965636573062838666b8ba500faa5c2406f4575d42a92379844c245dfb79d668374f6578b3128746dce59b7a02e8006066c656e6774680328";
@@ -605,4 +673,5 @@ mod tests {
             assert_eq!(buffer.as_slice()[15..], [0x62; 5]);
         }
     }
+    */
 }
