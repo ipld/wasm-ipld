@@ -50,6 +50,7 @@ jobs:
     - name: Rust tests
       if: matrix.platform.cross == false
       run: cargo test --workspace --all-features
+      working-directory: ./wasmlib
 
   lint-rust:
     runs-on: ubuntu-latest
@@ -71,6 +72,8 @@ jobs:
 
     - name: cargo fmt
       run: cargo fmt --all -- --check
+      working-directory: ./wasmlib
 
     - name: cargo clippy
       run: cargo clippy --workspace --all-features --examples --tests -- -D warnings
+      working-directory: ./wasmlib
