@@ -1,5 +1,5 @@
 use example::{self, get_error, ValueOrError};
-use std::{collections::BTreeMap, convert::TryInto};
+use std::{collections::BTreeMap, convert::TryInto, ffi::c_void};
 
 use libipld::{cid::CidGeneric, error::Error, Cid, Multihash};
 
@@ -89,7 +89,7 @@ pub unsafe fn load_adl(ptr: *mut u8, len: u32) -> *mut ValueOrError {
         Ok(val) => {
             let res = Box::new(ValueOrError {
                 err: std::ptr::null(),
-                value: val as *mut u8,
+                value: val as *mut c_void,
             });
             Box::into_raw(res)
         }

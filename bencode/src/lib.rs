@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn test_fixture() {
-        let block = include_bytes!("../../bittorrent-fixtures/animalsih");
+        let block = include_bytes!("../../bittorrent-fixtures/animals-fixtures/animals.infodict");
         let fixture_wac = convert_block(block, decode);
         let hex_fixture_wac = hex::encode(fixture_wac);
         assert_eq!(hex_fixture_wac, "foobar")

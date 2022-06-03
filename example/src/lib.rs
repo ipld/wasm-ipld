@@ -17,11 +17,16 @@ pub fn myalloc(len: usize) -> *mut u8 {
 #[repr(C)]
 pub struct ValueOrError {
     pub err: *const ByteWrapper,
-    pub value: *mut u8,
+    pub value: *mut c_void,
 }
 
 impl ValueOrError {
-    pub unsafe fn to_result(&self) -> Result<*mut u8, libipld::error::Error> {
+    /// Turn the data into a result which is either a pointer or an error
+    ///
+    /// # Safety
+    ///
+    /// This function assumes each of the pointers are either nil or valid
+    pub unsafe fn to_result(&self) -> Result<*mut c_void, libipld::error::Error> {
         if !self.err.is_null() {
             let err = &*self.err;
             let msg = ::std::slice::from_raw_parts(err.msg_ptr, err.msg_len.try_into().unwrap());
@@ -41,7 +46,7 @@ pub struct ByteWrapper {
 #[repr(C)]
 pub struct ADLorWAC {
     pub err: *const ByteWrapper,
-    pub adl_ptr: *const u8,
+    pub adl_ptr: *const c_void,
     pub wac: *const ByteWrapper,
 }
 
@@ -49,8 +54,14 @@ pub struct ADLorWAC {
 pub struct IterResp {
     pub err: *const ByteWrapper,
     pub key: *const ByteWrapper,
-    pub value_adl_ptr: *const u8,
+    pub value_adl_ptr: *const c_void,
     pub val_wac: *const ByteWrapper,
+}
+
+#[repr(C)]
+pub struct ReadResp {
+    pub err: *const ByteWrapper,
+    pub bytes_read: u32,
 }
 
 #[repr(C)]
@@ -72,7 +83,7 @@ pub fn byte_vec_to_byte_wrapper(b: Vec<u8>) -> *const ByteWrapper {
 
 pub fn get_error(err: libipld::error::Error) -> *const ValueOrError {
     let res = Box::new(ValueOrError {
-        value: std::ptr::null::<u8>() as *mut u8,
+        value: std::ptr::null::<c_void>() as *mut c_void,
         err: byte_vec_to_byte_wrapper(err.to_string().as_bytes().to_owned()),
     });
     Box::into_raw(res)
@@ -90,7 +101,7 @@ pub fn get_result_bytes(result: Result<Vec<u8>, libipld::error::Error>) -> *cons
                 value: Box::into_raw(Box::new(ByteWrapper {
                     msg_len: bx_len,
                     msg_ptr: bytes_ptr,
-                })) as *mut u8,
+                })) as *mut c_void,
             });
             Box::into_raw(res)
         }
@@ -102,16 +113,16 @@ pub fn get_result_bytes(result: Result<Vec<u8>, libipld::error::Error>) -> *cons
 
 #[cfg(target_arch = "wasm32")]
 extern "C" {
-    fn load_raw_block(cid_bytes: *const u8, cid_length: u8) -> *const ByteWrapper;
+    fn load_raw_block(cid_bytes: *const u8, cid_length: u8) -> *const ValueOrError;
 }
 
 #[cfg(target_arch = "wasm32")]
 extern "C" {
-    fn load_wac_block(cid_bytes: *const u8, cid_length: u8) -> *const ByteWrapper;
+    fn load_wac_block(cid_bytes: *const u8, cid_length: u8) -> *const ValueOrError;
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn load_raw_block(cid_bytes: *const u8, cid_length: u8) -> *const ByteWrapper {
+fn load_raw_block(cid_bytes: *const u8, cid_length: u8) -> *const ValueOrError {
     let c_bytes;
     unsafe {
         c_bytes = ::std::slice::from_raw_parts(cid_bytes, cid_length as usize);
@@ -120,13 +131,20 @@ fn load_raw_block(cid_bytes: *const u8, cid_length: u8) -> *const ByteWrapper {
 
     let m = global_blocks::GLOBAL_BLOCKSTORE.lock().unwrap();
     let val = m.get(&cr).expect("could not load block");
-
-    byte_vec_to_byte_wrapper(val.to_vec())
+    get_result_bytes(Ok(val.to_vec()))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn load_wac_block(cid_bytes: *const u8, cid_length: u8) -> *const ByteWrapper {
-    std::ptr::null()
+fn load_wac_block(cid_bytes: *const u8, cid_length: u8) -> *const ValueOrError {
+    let c_bytes;
+    unsafe {
+        c_bytes = ::std::slice::from_raw_parts(cid_bytes, cid_length as usize);
+    }
+    let cr = Cid::read_bytes(c_bytes).expect("could not load cid");
+
+    let m = global_blocks::GLOBAL_WAC_BLOCKSTORE.lock().unwrap();
+    let val = m.get(&cr).expect("could not load block");
+    get_result_bytes(Ok(val.to_vec()))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -137,21 +155,62 @@ pub mod global_blocks {
     use once_cell::sync::Lazy;
 
     pub static GLOBAL_BLOCKSTORE: Lazy<Mutex<HashMap<Cid, &[u8]>>> = Lazy::new(|| {
-        let mut m = HashMap::new();
+        let m = HashMap::new();
+        Mutex::new(m)
+    });
+
+    pub static GLOBAL_WAC_BLOCKSTORE: Lazy<Mutex<HashMap<Cid, &[u8]>>> = Lazy::new(|| {
+        let m = HashMap::new();
         Mutex::new(m)
     });
 }
 
-pub unsafe fn load_raw_block_caller(blk_cid: Cid) -> Box<[u8]> {
+/// Given a pointer to the start of a byte array of WAC data
+/// encode the data into the codec
+///
+///
+/// # Safety
+///
+/// This function assumes that the load_raw_block function returns valid results
+pub unsafe fn load_raw_block_caller(blk_cid: Cid) -> Result<Box<[u8]>, libipld::error::Error> {
     let blk_cid_bytes = blk_cid.to_bytes();
     let cidptr = blk_cid_bytes.as_ptr();
 
-    let blk_with_len_ptr = load_raw_block(cidptr, blk_cid_bytes.len() as u8);
-    let block_len = *(blk_with_len_ptr as *const u64);
+    let blk_res = &*load_raw_block(cidptr, blk_cid_bytes.len() as u8);
+    let res = blk_res.to_result();
+    match res {
+        Ok(v) => {
+            let blk_wrapped = &*(v as *const ByteWrapper);
+            let block_data =
+                ::std::slice::from_raw_parts(blk_wrapped.msg_ptr, blk_wrapped.msg_len as usize);
+            Ok(block_data.to_owned().into_boxed_slice())
+        }
+        Err(err) => Err(err),
+    }
+}
 
-    let blk_ptr = (blk_with_len_ptr as usize + 8) as *const u8;
-    let block_data = ::std::slice::from_raw_parts(blk_ptr, block_len as usize);
-    block_data.to_owned().into_boxed_slice()
+/// Given a pointer to the start of a byte array of WAC data
+/// encode the data into the codec
+///
+///
+/// # Safety
+///
+/// This function assumes that the load_raw_block function returns valid results
+pub unsafe fn load_wac_block_caller(blk_cid: Cid) -> Result<Box<[u8]>, libipld::error::Error> {
+    let blk_cid_bytes = blk_cid.to_bytes();
+    let cidptr = blk_cid_bytes.as_ptr();
+
+    let blk_res = &*load_wac_block(cidptr, blk_cid_bytes.len() as u8);
+    let res = blk_res.to_result();
+    match res {
+        Ok(v) => {
+            let blk_wrapped = &*(v as *const ByteWrapper);
+            let block_data =
+                ::std::slice::from_raw_parts(blk_wrapped.msg_ptr, blk_wrapped.msg_len as usize);
+            Ok(block_data.to_owned().into_boxed_slice())
+        }
+        Err(err) => Err(err),
+    }
 }
 
 /*
@@ -402,5 +461,7 @@ pub unsafe fn new_list_iter(adlptr: *mut u8) -> *const ValueOrError {
 }
 
 */
+
+use std::ffi::c_void;
 
 use libipld::Cid;

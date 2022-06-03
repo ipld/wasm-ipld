@@ -1,17 +1,13 @@
 use std::{
-    any::Any,
-    borrow::BorrowMut,
-    collections::{btree_map::Iter, BTreeMap},
-    convert::TryInto,
+    any::Any, borrow::BorrowMut, collections::BTreeMap, convert::TryInto, ffi::c_void,
     str::from_utf8,
 };
 
 use example::{
     byte_vec_to_byte_wrapper, get_error, load_raw_block_caller, ADLorWAC, ByteWrapper, IterResp,
-    ValueOrError,
+    ReadResp, ValueOrError,
 };
 use libipld::{cid::CidGeneric, error::Error, Multihash};
-use ouroboros::self_referencing;
 
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
 // allocator.
@@ -36,7 +32,7 @@ pub unsafe fn load_adl(ptr: *mut u8, len: u32) -> *mut ValueOrError {
         Ok(val) => {
             let res = Box::new(ValueOrError {
                 err: std::ptr::null(),
-                value: Box::into_raw(val) as *mut u8,
+                value: Box::into_raw(val) as *mut c_void,
             });
             Box::into_raw(res)
         }
@@ -77,13 +73,14 @@ pub unsafe fn adl_len(adlptr: *mut u8) -> i64 {
 /// This function assumes the adl pointer is to a valid adl node.
 /// Also assumes the buffer pointer is to an allocated and usable buffer.
 #[no_mangle]
-pub unsafe fn get_key(adlptr: *mut u8, key_ptr: *mut u8, key_len: i32) -> *const ADLorWAC {
-    let bx = Box::from_raw(adlptr as *mut dyn Any);
+pub unsafe fn get_key(adlptr: *mut c_void, key_ptr: *mut u8, key_len: i32) -> *const ADLorWAC {
+    let adl_ptr = adlptr as *mut BTDirElem;
+    let adl = &*adl_ptr;
 
     let key_len = key_len as usize;
     let key = ::std::slice::from_raw_parts(key_ptr, key_len);
 
-    let res = get_key_safe(bx, key);
+    let res = get_key_safe(adl, key);
     match res {
         Ok(b) => Box::into_raw(b),
         Err(err) => {
@@ -106,34 +103,36 @@ pub unsafe fn get_key(adlptr: *mut u8, key_ptr: *mut u8, key_len: i32) -> *const
 }
 
 fn get_key_safe(
-    bx: Box<dyn Any>,
+    elem: &BTDirElem,
     key_bytes: &[u8],
 ) -> Result<Box<ADLorWAC>, libipld::error::Error> {
     let key = std::str::from_utf8(key_bytes)?;
 
-    let dir_adl = bx.downcast::<BTDir>().ok();
-    match dir_adl {
-        Some(dir) => return dir_get_key(*dir, key),
-        None => (),
+    match elem {
+        BTDirElem::Dir(d) => {
+            let r = dir_get_key(d, key)?;
+            return Ok(r);
+        }
+        BTDirElem::File(_) => (),
     }
 
     Err(libipld::error::Error::msg("type not valid"))
 }
 
-fn dir_get_key(dir: BTDir, key: &str) -> Result<Box<ADLorWAC>, libipld::error::Error> {
+fn dir_get_key(dir: &BTDir, key: &str) -> Result<Box<ADLorWAC>, libipld::error::Error> {
     let val = dir
         .children
         .get(key)
-        .ok_or(libipld::error::Error::msg("not found"))?;
+        .ok_or_else(|| libipld::error::Error::msg("not found"))?;
 
     let val_ptr = match val {
         BTDirElem::File(f) => {
             let ptr: *const BTFile = f;
-            ptr as *const u8
+            ptr as *const c_void
         }
         BTDirElem::Dir(d) => {
             let ptr: *const BTDir = d;
-            ptr as *const u8
+            ptr as *const c_void
         }
     };
 
@@ -149,11 +148,17 @@ fn dir_get_key(dir: BTDir, key: &str) -> Result<Box<ADLorWAC>, libipld::error::E
 /// This function assumes the adlptr is to a valid adl node
 #[no_mangle]
 pub unsafe fn new_map_iter(adlptr: *mut u8) -> *const u8 {
-    let bx = Box::from_raw(adlptr as *mut dyn Any);
-    let dir_adl = bx.downcast::<BTDir>().expect("not a map");
+    let bx = Box::from_raw(adlptr as *mut BTDirElem);
+
+    let dir: &BTDir;
+    if let BTDirElem::Dir(d) = &*bx {
+        dir = d;
+    } else {
+        panic!("not a directory")
+    }
 
     let mut li: Vec<(*const String, *const BTDirElem)> = Vec::new();
-    for (k, v) in &dir_adl.children {
+    for (k, v) in &dir.children {
         li.push((k, v))
     }
 
@@ -162,7 +167,7 @@ pub unsafe fn new_map_iter(adlptr: *mut u8) -> *const u8 {
         index: 0,
     };
 
-    Box::leak(dir_adl);
+    Box::leak(bx);
     let iter_box: Box<dyn Any> = Box::new(iter);
 
     Box::into_raw(iter_box) as *const u8
@@ -194,11 +199,11 @@ pub unsafe fn iter_next(adlptr: *mut u8) -> *const IterResp {
             let ptr = match elem {
                 BTDirElem::Dir(d) => {
                     let ptr: *const BTDir = d;
-                    ptr as *const u8
+                    ptr as *const c_void
                 }
                 BTDirElem::File(f) => {
                     let ptr: *const BTFile = f;
-                    ptr as *const u8
+                    ptr as *const c_void
                 }
             };
 
@@ -230,18 +235,19 @@ pub unsafe fn iter_next(adlptr: *mut u8) -> *const IterResp {
 /// This function assumes the adlptr is to a valid adl node
 #[no_mangle]
 pub unsafe fn new_bytes_reader(adlptr: *mut u8) -> *const u8 {
-    let bx = Box::from_raw(adlptr as *mut dyn Any);
-    let file_adl = bx.downcast::<BTFile>().expect("not a file");
+    //let file_adl = Box::from_raw(adlptr as *mut BTFile);
+    let file_adl = adlptr as *const BTFile;
+    let _g = &*(file_adl as *const BTDirElem);
 
     let reader = FileReader {
-        file: file_adl.as_ref(),
+        file: file_adl,
         offset: 0,
-        length: file_adl.length,
+        length: (*file_adl).length,
     };
 
-    let reader_box: Box<dyn Any> = Box::new(reader);
+    let reader_box: Box<FileReader> = Box::new(reader);
 
-    Box::leak(file_adl);
+    //Box::leak(file_adl);
     Box::into_raw(reader_box) as *const u8
 }
 
@@ -269,8 +275,8 @@ struct FileReader {
 #[no_mangle]
 pub unsafe fn seek_adl(adlptr: *mut u8, offset: i64, whence: u32) -> u64 {
     // Get ADL
-    let bx = Box::from_raw(adlptr as *mut dyn Any);
-    let mut file_adl = bx.downcast::<FileReader>().expect("not a file");
+    let mut file_adl = Box::from_raw(adlptr as *mut FileReader);
+    //let mut file_adl = bx.downcast::<FileReader>().expect("not a file");
     let res = seek_adl_safe(file_adl.as_mut(), offset, whence);
 
     // Release ADL memory
@@ -288,10 +294,9 @@ pub unsafe fn seek_adl(adlptr: *mut u8, offset: i64, whence: u32) -> u64 {
 /// This function assumes the adl pointer is to a valid adl node.
 /// Also assumes the buffer pointer is to an allocated and usable buffer.
 #[no_mangle]
-pub unsafe fn read_adl(adlptr: *mut u8, bufptr: *mut u8, bufleni: i32) -> u32 {
+pub unsafe fn read_adl(adlptr: *mut u8, bufptr: *mut u8, bufleni: i32) -> *const ReadResp {
     // Get ADL
-    let bx = Box::from_raw(adlptr as *mut dyn Any);
-    let mut file_adl = bx.downcast::<&mut FileReader>().expect("not a file");
+    let mut file_adl = Box::from_raw(adlptr as *mut FileReader);
 
     // Get buffer
     let mut buf = Vec::from_raw_parts(
@@ -311,7 +316,23 @@ pub unsafe fn read_adl(adlptr: *mut u8, bufptr: *mut u8, bufleni: i32) -> u32 {
     // Release the buffer
     let b_buf = Box::new(buf);
     Box::leak(b_buf);
-    res
+
+    match res {
+        Ok(v) => {
+            let bx = Box::new(ReadResp {
+                bytes_read: v,
+                err: std::ptr::null(),
+            });
+            Box::into_raw(bx)
+        }
+        Err(err) => {
+            let bx = Box::new(ReadResp {
+                bytes_read: 0,
+                err: byte_vec_to_byte_wrapper(err.to_string().as_bytes().to_owned()),
+            });
+            Box::into_raw(bx)
+        }
+    }
 }
 
 fn seek_adl_safe(f: &mut FileReader, offset: i64, whence: u32) -> u64 {
@@ -331,7 +352,11 @@ fn seek_adl_safe(f: &mut FileReader, offset: i64, whence: u32) -> u64 {
     f.offset
 }
 
-fn read_adl_safer(f: &mut FileReader, file_info: &BTFile, buf: &mut [u8]) -> u32 {
+fn read_adl_safer(
+    f: &mut FileReader,
+    file_info: &BTFile,
+    buf: &mut [u8],
+) -> Result<u32, libipld::error::Error> {
     let buflen = buf.len() as u32;
 
     // skip if past the end
@@ -339,14 +364,12 @@ fn read_adl_safer(f: &mut FileReader, file_info: &BTFile, buf: &mut [u8]) -> u32
         panic!("tried reading past the end of the file")
     }
 
-    let mut at = 0;
-    let mut piece_num = 0;
     let mut bufrem = buflen;
 
     // handle the first block
-    piece_num = ((f.offset + file_info.start_offset) / file_info.piece_length) as usize;
+    let mut piece_num = ((f.offset + file_info.start_offset) / file_info.piece_length) as usize;
     let start_delta = ((f.offset + file_info.start_offset) % file_info.piece_length) as usize;
-    at = f.offset;
+    let mut at = f.offset;
 
     while at < f.length && bufrem > 0 {
         // fastforward the first one if needed.
@@ -354,11 +377,14 @@ fn read_adl_safer(f: &mut FileReader, file_info: &BTFile, buf: &mut [u8]) -> u32
         let block_data: Box<[u8]>;
 
         unsafe {
-            block_data = load_raw_block_caller(blk_cid);
+            block_data = load_raw_block_caller(blk_cid)?;
         }
 
         if at == f.offset {
             let mut num_to_copy = bufrem;
+            if (num_to_copy as u64) > f.length - at {
+                num_to_copy = (f.length - at) as u32
+            }
             let block_rem = (block_data.len() - start_delta) as u32;
             if num_to_copy > block_rem {
                 num_to_copy = block_rem;
@@ -372,6 +398,9 @@ fn read_adl_safer(f: &mut FileReader, file_info: &BTFile, buf: &mut [u8]) -> u32
             at = numcpy as u64 + f.offset;
         } else {
             let mut num_to_copy = bufrem;
+            if (num_to_copy as u64) > f.length - at {
+                num_to_copy = (f.length - at) as u32
+            }
             let block_rem = block_data.len() as u32;
             if num_to_copy > block_rem {
                 num_to_copy = block_rem;
@@ -390,7 +419,7 @@ fn read_adl_safer(f: &mut FileReader, file_info: &BTFile, buf: &mut [u8]) -> u32
 
     let num_read = buflen - bufrem;
     f.offset += num_read as u64;
-    num_read
+    Ok(num_read)
 }
 
 fn ipld_try_map(i: wac::Wac) -> Result<BTreeMap<Vec<u8>, wac::Wac>, Error> {
@@ -421,7 +450,7 @@ fn ipld_try_bytestring(i: wac::Wac) -> Result<Vec<u8>, Error> {
     }
 }
 
-fn load_adl_internal(input: &[u8]) -> Result<Box<dyn Any>, Error> {
+fn load_adl_internal(input: &[u8]) -> Result<Box<BTDirElem>, Error> {
     // Assume node is WAC
     let node = wac::from_bytes(input)?;
 
@@ -527,6 +556,10 @@ fn load_adl_internal(input: &[u8]) -> Result<Box<dyn Any>, Error> {
                     piece_length: piece_length_int as u64,
                 };
                 start_index = new_starting_index;
+                start_piece = start_piece + num_pieces - 1;
+                if start_index == 0 {
+                    start_piece += 1;
+                }
                 if internal_dir
                     .children
                     .insert(s.to_string(), BTDirElem::File(f))
@@ -540,7 +573,7 @@ fn load_adl_internal(input: &[u8]) -> Result<Box<dyn Any>, Error> {
         }
     }
 
-    let db: Box<dyn Any> = Box::new(dir);
+    let db: Box<BTDirElem> = Box::new(BTDirElem::Dir(dir));
     Ok(db)
 }
 
@@ -566,14 +599,13 @@ struct DirectoryIter {
 }
 
 #[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use std::str::FromStr;
 
     use example::ByteWrapper;
     use libipld::Cid;
 
-    use crate::{get_key, load_adl, new_bytes_reader, read_adl, seek_adl};
+    use crate::{get_key, load_adl, new_bytes_reader, read_adl};
 
     unsafe fn assert_no_err(err: *const ByteWrapper) {
         if !err.is_null() {
@@ -619,59 +651,20 @@ mod tests {
             let mut buffer: Vec<u8> = Vec::new();
             buffer.resize(1024 * 1024, 0);
 
-            let num_read = read_adl(
+            let resp = read_adl(
                 file_reader_ptr as *mut u8,
                 buffer.as_mut_ptr(),
                 buffer.len() as i32,
             );
-            assert_ne!(num_read, 40);
+            assert_eq!((*resp).err, std::ptr::null());
+            let num_read = (*resp).bytes_read;
+            assert_eq!(num_read, 273042);
+            buffer.truncate(num_read.try_into().unwrap());
 
             let raw_file =
                 include_bytes!("../../bittorrent-fixtures/animals-fixtures/animals/Koala.jpg");
+            dbg!(raw_file.len());
             assert_eq!(buffer.as_slice(), raw_file);
         }
     }
-
-    /*
-    #[test]
-    fn test_partial_reads() {
-        let hex_wac_file_root = "090406046e616d65060466696c65060c7069656365206c656e677468031e0606706965636573062838666b8ba500faa5c2406f4575d42a92379844c245dfb79d668374f6578b3128746dce59b7a02e8006066c656e6774680328";
-        let mut wac_file_root = hex::decode(hex_wac_file_root).unwrap();
-
-        unsafe {
-            let adl_ptr = load_adl(wac_file_root.as_mut_ptr(), wac_file_root.len());
-            let mut buffer: Vec<u8> = Vec::new();
-            buffer.resize(20, 0);
-
-            let num_read = read_adl(adl_ptr as *mut u8, buffer.as_mut_ptr(), buffer.len() as i32);
-            assert_eq!(num_read, 20);
-            assert_eq!(buffer.as_slice()[0..20], [0x61; 20]);
-
-            let num_read = read_adl(adl_ptr as *mut u8, buffer.as_mut_ptr(), buffer.len() as i32);
-            assert_eq!(num_read, 20);
-            assert_eq!(buffer.as_slice()[0..10], [0x61; 10]);
-            assert_eq!(buffer.as_slice()[10..], [0x62; 10]);
-        }
-    }
-
-    #[test]
-    fn test_seek_read() {
-        let hex_wac_file_root = "090406046e616d65060466696c65060c7069656365206c656e677468031e0606706965636573062838666b8ba500faa5c2406f4575d42a92379844c245dfb79d668374f6578b3128746dce59b7a02e8006066c656e6774680328";
-        let mut wac_file_root = hex::decode(hex_wac_file_root).unwrap();
-
-        unsafe {
-            let adl_ptr = load_adl(wac_file_root.as_mut_ptr(), wac_file_root.len());
-            let mut buffer: Vec<u8> = Vec::new();
-            buffer.resize(20, 0);
-
-            let seek_to = seek_adl(adl_ptr as *mut u8, 15, 0);
-            assert_eq!(seek_to, 15);
-
-            let num_read = read_adl(adl_ptr as *mut u8, buffer.as_mut_ptr(), buffer.len() as i32);
-            assert_eq!(num_read, 20);
-            assert_eq!(buffer.as_slice()[0..15], [0x61; 15]);
-            assert_eq!(buffer.as_slice()[15..], [0x62; 5]);
-        }
-    }
-    */
 }
