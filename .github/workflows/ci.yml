@@ -56,6 +56,7 @@ jobs:
       working-directory: ./wasmlib
 
     - name: Rust build release
+      if: matrix.platform.cross == true
       run: cargo build --target wasm32-unknown-unknown --release
       working-directory: ./wasmlib
 
