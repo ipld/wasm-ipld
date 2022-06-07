@@ -224,9 +224,7 @@ pub unsafe fn load_raw_block_caller(blk_cid: Cid) -> Result<Box<[u8]>, libipld::
     let blk_res = &*load_raw_block(cidptr, blk_cid_bytes.len() as u8);
     let res = blk_res.to_result();
     match res {
-        Ok(v) => {
-            Ok(v.to_owned().into_boxed_slice())
-        }
+        Ok(v) => Ok(v.to_owned().into_boxed_slice()),
         Err(err) => Err(err),
     }
 }
@@ -245,9 +243,7 @@ pub unsafe fn load_wac_block_caller(blk_cid: Cid) -> Result<Box<[u8]>, libipld::
     let blk_res = &*load_wac_block(cidptr, blk_cid_bytes.len() as u8);
     let res = blk_res.to_result();
     match res {
-        Ok(v) => {
-            Ok(v.to_owned().into_boxed_slice())
-        }
+        Ok(v) => Ok(v.to_owned().into_boxed_slice()),
         Err(err) => Err(err),
     }
 }

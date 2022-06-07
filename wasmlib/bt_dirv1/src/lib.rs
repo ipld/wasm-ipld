@@ -1,13 +1,17 @@
 use std::{
-    any::Any, borrow::BorrowMut, collections::BTreeMap, convert::TryInto, ffi::c_void,
+    any::Any,
+    borrow::BorrowMut,
+    collections::BTreeMap,
+    convert::TryInto,
+    ffi::c_void,
     str::{from_utf8, FromStr},
 };
 
 use example::{
-    byte_vec_to_byte_wrapper, load_raw_block_caller, load_wac_block_caller, ADLorWAC, ByteWrapper, IterResp,
-    ReadResp,
+    byte_vec_to_byte_wrapper, load_raw_block_caller, load_wac_block_caller, ADLorWAC, ByteWrapper,
+    IterResp, ReadResp,
 };
-use libipld::{cid::CidGeneric, error::Error, Multihash, Cid};
+use libipld::{cid::CidGeneric, error::Error, Cid, Multihash};
 
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
 // allocator.
@@ -45,9 +49,9 @@ pub unsafe fn load_adl(ptr: *mut u8, len: u32) -> *mut ADLorWAC {
                 wac: std::ptr::null(),
             });
             Box::into_raw(res)
-        },
+        }
         Ok(val) => {
-            let res = Box::new(ADLorWAC{
+            let res = Box::new(ADLorWAC {
                 err: std::ptr::null(),
                 adl_ptr: Box::into_raw(val) as *mut c_void,
                 adl_kind: wac::WacCode::Map.try_into().unwrap(),
@@ -384,10 +388,12 @@ fn read_adl_safer(
 
     // skip if past the end
     if f.offset == f.length {
-        return Err(libipld::error::Error::msg("read: EOF"))
+        return Err(libipld::error::Error::msg("read: EOF"));
     }
     if f.offset > f.length {
-        return Err(libipld::error::Error::msg("tried reading past the end of the file"))
+        return Err(libipld::error::Error::msg(
+            "tried reading past the end of the file",
+        ));
     }
 
     let mut bufrem = buflen;
@@ -626,7 +632,7 @@ struct DirectoryIter {
 
 #[cfg(test)]
 mod tests {
-    use std::{str::FromStr, ffi::c_void};
+    use std::{ffi::c_void, str::FromStr};
 
     use example::ByteWrapper;
     use libipld::Cid;
