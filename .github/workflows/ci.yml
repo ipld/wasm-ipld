@@ -21,6 +21,7 @@ jobs:
         - target: wasm32-unknown-unknown
           host: ubuntu-latest
           cross: true
+        go: [ "1.18.x" ]
     env:
       RUST_BACKTRACE: 1
       CARGO_INCREMENTAL: 0
@@ -30,6 +31,8 @@ jobs:
     steps:
     - name: Checkout sources
       uses: actions/checkout@v2
+      with:
+        submodules: recursive
 
     - name: Cache cargo folder
       uses: actions/cache@v1
@@ -51,6 +54,28 @@ jobs:
       if: matrix.platform.cross == false
       run: cargo test --workspace --all-features
       working-directory: ./wasmlib
+
+    - name: Rust build release
+      run: cargo build --target wasm32-unknown-unknown --release
+      working-directory: ./wasmlib
+
+    - name: Setup Go
+      if: matrix.platform.cross == true
+      uses: actions/setup-go@v2
+      with:
+        go-version: ${{ matrix.go }}
+    - name: Go information
+      run: |
+        go version
+        go env
+    - name: Run tests
+      if: matrix.platform.cross == true
+      uses: protocol/multiple-go-modules@v1.2
+      with:
+        # Use -coverpkg=./..., so that we include cross-package coverage.
+        # If package ./A imports ./B, and ./A's tests also cover ./B,
+        # this means ./B's coverage will be significantly higher than 0%.
+        run: go test -v -coverprofile=module-coverage.txt -coverpkg=./... ./...
 
   lint-rust:
     runs-on: ubuntu-latest

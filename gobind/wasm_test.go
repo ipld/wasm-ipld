@@ -20,8 +20,9 @@ import (
 	basicnode "github.com/ipld/go-ipld-prime/node/basic"
 )
 
-func TestFoo(t *testing.T) {
-	codecWasm, err := ioutil.ReadFile("C:\\Users\\adin\\workspace\\rust\\wasm-ipld\\wasmlib\\target\\wasm32-unknown-unknown\\release\\bencode.wasm")
+func TestBasicCodecAndADL(t *testing.T) {
+	//cargo build --target wasm32-unknown-unknown --release
+	codecWasm, err := ioutil.ReadFile("../wasmlib/target/wasm32-unknown-unknown/release/bencode.wasm")
 	if err != nil {
 		panic(err)
 	}
@@ -47,7 +48,7 @@ func TestFoo(t *testing.T) {
 	}
 	fmt.Println(buf.String())
 
-	ADLWasm, err := ioutil.ReadFile("C:\\Users\\adin\\workspace\\rust\\wasm-ipld\\wasmlib\\target\\wasm32-unknown-unknown\\release\\bt_dirv1.wasm")
+	ADLWasm, err := ioutil.ReadFile("../wasmlib/target/wasm32-unknown-unknown/release/bt_dirv1.wasm")
 	if err != nil {
 		panic(err)
 	}
