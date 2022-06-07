@@ -38,6 +38,29 @@ impl ValueOrError {
 }
 
 #[repr(C)]
+pub struct BlockResp {
+    pub msg_len: u32,
+    pub msg_ptr: *const u8,
+    pub is_err: bool,
+}
+
+impl BlockResp {
+    /// Turn the data into a result which is either bytes or an error
+    ///
+    /// # Safety
+    ///
+    /// This function assumes each of the pointers are either nil or valid
+    pub unsafe fn to_result(&self) -> Result<&[u8], libipld::error::Error> {
+        let msg = ::std::slice::from_raw_parts(self.msg_ptr, self.msg_len.try_into().unwrap());
+        if self.is_err {
+            let msg_str = std::str::from_utf8(msg)?;
+            return Err(libipld::error::Error::msg(msg_str));
+        }
+        Ok(msg)
+    }
+}
+
+#[repr(C)]
 pub struct ByteWrapper {
     pub msg_len: u32,
     pub msg_ptr: *const u8,
@@ -47,6 +70,7 @@ pub struct ByteWrapper {
 pub struct ADLorWAC {
     pub err: *const ByteWrapper,
     pub adl_ptr: *const c_void,
+    pub adl_kind: u8,
     pub wac: *const ByteWrapper,
 }
 
@@ -55,6 +79,7 @@ pub struct IterResp {
     pub err: *const ByteWrapper,
     pub key: *const ByteWrapper,
     pub value_adl_ptr: *const c_void,
+    pub value_adl_kind: u8,
     pub val_wac: *const ByteWrapper,
 }
 
@@ -113,16 +138,16 @@ pub fn get_result_bytes(result: Result<Vec<u8>, libipld::error::Error>) -> *cons
 
 #[cfg(target_arch = "wasm32")]
 extern "C" {
-    fn load_raw_block(cid_bytes: *const u8, cid_length: u8) -> *const ValueOrError;
+    fn load_raw_block(cid_bytes: *const u8, cid_length: u8) -> *const BlockResp;
 }
 
 #[cfg(target_arch = "wasm32")]
 extern "C" {
-    fn load_wac_block(cid_bytes: *const u8, cid_length: u8) -> *const ValueOrError;
+    fn load_wac_block(cid_bytes: *const u8, cid_length: u8) -> *const BlockResp;
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn load_raw_block(cid_bytes: *const u8, cid_length: u8) -> *const ValueOrError {
+fn load_raw_block(cid_bytes: *const u8, cid_length: u8) -> *const BlockResp {
     let c_bytes;
     unsafe {
         c_bytes = ::std::slice::from_raw_parts(cid_bytes, cid_length as usize);
@@ -131,11 +156,21 @@ fn load_raw_block(cid_bytes: *const u8, cid_length: u8) -> *const ValueOrError {
 
     let m = global_blocks::GLOBAL_BLOCKSTORE.lock().unwrap();
     let val = m.get(&cr).expect("could not load block");
-    get_result_bytes(Ok(val.to_vec()))
+
+    let bx = val.to_vec().into_boxed_slice();
+    let bx_len = bx.len() as u32;
+    let bytes_ptr = Box::into_raw(bx) as *const u8;
+
+    let res = Box::new(BlockResp {
+        msg_len: bx_len,
+        msg_ptr: bytes_ptr,
+        is_err: false,
+    });
+    Box::into_raw(res)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn load_wac_block(cid_bytes: *const u8, cid_length: u8) -> *const ValueOrError {
+fn load_wac_block(cid_bytes: *const u8, cid_length: u8) -> *const BlockResp {
     let c_bytes;
     unsafe {
         c_bytes = ::std::slice::from_raw_parts(cid_bytes, cid_length as usize);
@@ -144,7 +179,17 @@ fn load_wac_block(cid_bytes: *const u8, cid_length: u8) -> *const ValueOrError {
 
     let m = global_blocks::GLOBAL_WAC_BLOCKSTORE.lock().unwrap();
     let val = m.get(&cr).expect("could not load block");
-    get_result_bytes(Ok(val.to_vec()))
+
+    let bx = val.to_vec().into_boxed_slice();
+    let bx_len = bx.len() as u32;
+    let bytes_ptr = Box::into_raw(bx) as *const u8;
+
+    let res = Box::new(BlockResp {
+        msg_len: bx_len,
+        msg_ptr: bytes_ptr,
+        is_err: false,
+    });
+    Box::into_raw(res)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -180,10 +225,7 @@ pub unsafe fn load_raw_block_caller(blk_cid: Cid) -> Result<Box<[u8]>, libipld::
     let res = blk_res.to_result();
     match res {
         Ok(v) => {
-            let blk_wrapped = &*(v as *const ByteWrapper);
-            let block_data =
-                ::std::slice::from_raw_parts(blk_wrapped.msg_ptr, blk_wrapped.msg_len as usize);
-            Ok(block_data.to_owned().into_boxed_slice())
+            Ok(v.to_owned().into_boxed_slice())
         }
         Err(err) => Err(err),
     }
@@ -204,10 +246,7 @@ pub unsafe fn load_wac_block_caller(blk_cid: Cid) -> Result<Box<[u8]>, libipld::
     let res = blk_res.to_result();
     match res {
         Ok(v) => {
-            let blk_wrapped = &*(v as *const ByteWrapper);
-            let block_data =
-                ::std::slice::from_raw_parts(blk_wrapped.msg_ptr, blk_wrapped.msg_len as usize);
-            Ok(block_data.to_owned().into_boxed_slice())
+            Ok(v.to_owned().into_boxed_slice())
         }
         Err(err) => Err(err),
     }

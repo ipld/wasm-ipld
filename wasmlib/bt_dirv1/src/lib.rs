@@ -1,19 +1,28 @@
 use std::{
     any::Any, borrow::BorrowMut, collections::BTreeMap, convert::TryInto, ffi::c_void,
-    str::from_utf8,
+    str::{from_utf8, FromStr},
 };
 
 use example::{
-    byte_vec_to_byte_wrapper, get_error, load_raw_block_caller, ADLorWAC, ByteWrapper, IterResp,
-    ReadResp, ValueOrError,
+    byte_vec_to_byte_wrapper, load_raw_block_caller, load_wac_block_caller, ADLorWAC, ByteWrapper, IterResp,
+    ReadResp,
 };
-use libipld::{cid::CidGeneric, error::Error, Multihash};
+use libipld::{cid::CidGeneric, error::Error, Multihash, Cid};
 
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
 // allocator.
 #[cfg(feature = "wee_alloc")]
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
+
+#[no_mangle]
+pub unsafe fn does_nothing() -> () {
+    let c = Cid::from_str("forcing the inclusion an unused extern function").unwrap();
+    let b = load_wac_block_caller(c).unwrap();
+    if b.len() == 0 {
+        panic!("you shouldn't call this function")
+    }
+}
 
 /// Takes a pointer and length of a byte array containing WAC encoded data and returns
 /// a pointer to the ADL instance.
@@ -22,17 +31,27 @@ static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 ///
 /// This function assumes the block pointer has size have been allocated and filled.
 #[no_mangle]
-pub unsafe fn load_adl(ptr: *mut u8, len: u32) -> *mut ValueOrError {
+pub unsafe fn load_adl(ptr: *mut u8, len: u32) -> *mut ADLorWAC {
     let len = len as usize;
     let block_data = ::std::slice::from_raw_parts(ptr, len);
 
     let result_or_err = load_adl_internal(block_data);
     match result_or_err {
-        Err(error) => get_error(error) as *mut ValueOrError,
+        Err(error) => {
+            let res = Box::new(ADLorWAC {
+                err: byte_vec_to_byte_wrapper(error.to_string().as_bytes().to_owned()),
+                adl_ptr: std::ptr::null(),
+                adl_kind: 0,
+                wac: std::ptr::null(),
+            });
+            Box::into_raw(res)
+        },
         Ok(val) => {
-            let res = Box::new(ValueOrError {
+            let res = Box::new(ADLorWAC{
                 err: std::ptr::null(),
-                value: Box::into_raw(val) as *mut c_void,
+                adl_ptr: Box::into_raw(val) as *mut c_void,
+                adl_kind: wac::WacCode::Map.try_into().unwrap(),
+                wac: std::ptr::null(),
             });
             Box::into_raw(res)
         }
@@ -95,6 +114,7 @@ pub unsafe fn get_key(adlptr: *mut c_void, key_ptr: *mut u8, key_len: i32) -> *c
                     msg_ptr: bytes_ptr,
                 })),
                 adl_ptr: std::ptr::null(),
+                adl_kind: 0,
                 wac: std::ptr::null(),
             });
             Box::into_raw(res)
@@ -125,20 +145,21 @@ fn dir_get_key(dir: &BTDir, key: &str) -> Result<Box<ADLorWAC>, libipld::error::
         .get(key)
         .ok_or_else(|| libipld::error::Error::msg("not found"))?;
 
-    let val_ptr = match val {
+    let (val_ptr, val_kind) = match val {
         BTDirElem::File(f) => {
             let ptr: *const BTFile = f;
-            ptr as *const c_void
+            (ptr as *const c_void, wac::WacCode::Bytes)
         }
         BTDirElem::Dir(d) => {
             let ptr: *const BTDir = d;
-            ptr as *const c_void
+            (ptr as *const c_void, wac::WacCode::Map)
         }
     };
 
     Ok(Box::new(ADLorWAC {
         err: std::ptr::null(),
         adl_ptr: val_ptr,
+        adl_kind: val_kind.into(),
         wac: std::ptr::null(),
     }))
 }
@@ -196,20 +217,21 @@ pub unsafe fn iter_next(adlptr: *mut u8) -> *const IterResp {
         Some(kv_pair) => {
             let kb = kv_pair.0.as_ref().unwrap().to_owned().into_bytes();
             let elem = &*kv_pair.1;
-            let ptr = match elem {
+            let (ptr, kind) = match elem {
                 BTDirElem::Dir(d) => {
                     let ptr: *const BTDir = d;
-                    ptr as *const c_void
+                    (ptr as *const c_void, wac::WacCode::Map)
                 }
                 BTDirElem::File(f) => {
                     let ptr: *const BTFile = f;
-                    ptr as *const c_void
+                    (ptr as *const c_void, wac::WacCode::Bytes)
                 }
             };
 
             let res = Box::new(IterResp {
                 key: byte_vec_to_byte_wrapper(kb),
                 value_adl_ptr: ptr,
+                value_adl_kind: kind.into(),
                 val_wac: std::ptr::null(),
                 err: byte_vec_to_byte_wrapper("end of iterator".as_bytes().to_owned()),
             });
@@ -219,6 +241,7 @@ pub unsafe fn iter_next(adlptr: *mut u8) -> *const IterResp {
             let res = Box::new(IterResp {
                 key: std::ptr::null(),
                 value_adl_ptr: std::ptr::null(),
+                value_adl_kind: 0,
                 val_wac: std::ptr::null(),
                 err: byte_vec_to_byte_wrapper("end of iterator".as_bytes().to_owned()),
             });
@@ -360,8 +383,11 @@ fn read_adl_safer(
     let buflen = buf.len() as u32;
 
     // skip if past the end
-    if f.offset >= f.length {
-        panic!("tried reading past the end of the file")
+    if f.offset == f.length {
+        return Err(libipld::error::Error::msg("read: EOF"))
+    }
+    if f.offset > f.length {
+        return Err(libipld::error::Error::msg("tried reading past the end of the file"))
     }
 
     let mut bufrem = buflen;
@@ -600,7 +626,7 @@ struct DirectoryIter {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
+    use std::{str::FromStr, ffi::c_void};
 
     use example::ByteWrapper;
     use libipld::Cid;
@@ -636,7 +662,9 @@ mod tests {
                 wac_file_root.len().try_into().unwrap(),
             );
             assert_no_err(adl_ptr_or_err.err);
-            let adl_ptr = adl_ptr_or_err.value;
+            let adl_ptr = adl_ptr_or_err.adl_ptr as *mut c_void;
+            let adl_kind: u8 = wac::WacCode::Map.into();
+            assert_eq!(adl_ptr_or_err.adl_kind, adl_kind);
 
             let lookup_key = "Koala.jpg";
             let lookup_res = &*get_key(
@@ -645,6 +673,8 @@ mod tests {
                 lookup_key.len().try_into().unwrap(),
             );
             assert_no_err(lookup_res.err);
+            let adl_kind: u8 = wac::WacCode::Bytes.into();
+            assert_eq!(lookup_res.adl_kind, adl_kind);
 
             let file_reader_ptr = new_bytes_reader(lookup_res.adl_ptr as *mut u8);
 
