@@ -207,7 +207,7 @@ mod tests {
         let block = include_bytes!("../../bittorrent-fixtures/animals-fixtures/animals.infodict");
         let fixture_wac = convert_block(block, decode);
         let hex_fixture_wac = hex::encode(fixture_wac);
-        assert_eq!(hex_fixture_wac, "foobar")
+        assert_eq!(hex_fixture_wac, "0904060566696c65730802090206066c656e6774680392d510060470617468080106094b6f616c612e6a7067090206066c656e67746803a6dc050604706174680801060970616e64612e6a706706046e616d650607616e696d616c73060c7069656365206c656e677468038080100606706965636573062813da56fd10d288769fdea62d464572c5f16e967ddc462b4d35419ca9230d69d758f0832a30959baa")
     }
 
     fn test_equality(bencode_block: &str, wac_block: &[u8]) {

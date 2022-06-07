@@ -21,7 +21,6 @@ import (
 )
 
 func TestBasicCodecAndADL(t *testing.T) {
-	//cargo build --target wasm32-unknown-unknown --release
 	codecWasm, err := ioutil.ReadFile("../wasmlib/target/wasm32-unknown-unknown/release/bencode.wasm")
 	if err != nil {
 		panic(err)

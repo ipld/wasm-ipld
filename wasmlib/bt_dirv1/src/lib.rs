@@ -19,8 +19,11 @@ use libipld::{cid::CidGeneric, error::Error, Cid, Multihash};
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
+/// # Safety
+///
+/// This function should not exist, and if you're calling it you're doing something wrong
 #[no_mangle]
-pub unsafe fn does_nothing() -> () {
+pub unsafe fn does_nothing() {
     let c = Cid::from_str("forcing the inclusion an unused extern function").unwrap();
     let b = load_wac_block_caller(c).unwrap();
     if b.len() == 0 {
