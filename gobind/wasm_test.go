@@ -47,7 +47,7 @@ func TestBasicCodecAndADL(t *testing.T) {
 	}
 	fmt.Println(buf.String())
 
-	ADLWasm, err := ioutil.ReadFile("../wasmlib/target/wasm32-unknown-unknown/release/bt_dirv1.wasm")
+	ADLWasm, err := ioutil.ReadFile("../wasmlib/target/wasm32-unknown-unknown/release/bt_v1.wasm")
 	if err != nil {
 		panic(err)
 	}
