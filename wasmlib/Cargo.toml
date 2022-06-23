@@ -2,8 +2,9 @@
 
 members = [
     "bencode",
-    "bt_filev1",
-    "wac"
+    "bt_v1",
+    "wac",
+    "helpers"
 ]
 
 [profile.release]

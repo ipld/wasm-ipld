@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, io::Write};
 
+use helpers::{get_result_bytes, Codec, ValueOrError};
 use integer_encoding::VarIntWriter;
 use libipld::error::Error;
 
@@ -11,12 +12,50 @@ use wac::WacCode;
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
-/// Allocate memory into the module's linear memory
-/// and return the offset to the start of the block.
+struct BencodeCodec {}
+impl helpers::Codec for BencodeCodec {
+    /// Given a pointer to the start of a byte array of WAC data
+    /// encode the data into the codec
+    ///
+    ///
+    /// # Safety
+    ///
+    /// This function assumes the block pointer has size have been allocated and filled.
+    unsafe fn encode(&self, ptr: *mut u8, len: u32) -> *const ValueOrError {
+        let len = len as usize;
+        let data = ::std::slice::from_raw_parts(ptr, len);
+
+        let result: Result<Vec<u8>, libipld::error::Error> = wac_to_bencode_block(data);
+
+        get_result_bytes(result)
+    }
+
+    /// Given a pointer to the start of a byte array and
+    /// its length, decode it into a standard IPLD codec representation
+    /// (for now WAC)
+    ///
+    /// # Safety
+    ///
+    /// This function assumes the block pointer has size have been allocated and filled.
+    unsafe fn decode(&self, ptr: *mut u8, len: u32) -> *const ValueOrError {
+        let len = len as usize;
+        let data = ::std::slice::from_raw_parts(ptr, len);
+        let result = bencode_to_wac_block(data);
+
+        get_result_bytes(result)
+    }
+}
+
+/// Given a pointer to the start of a byte array of WAC data
+/// encode the data into the codec
+///
+///
+/// # Safety
+///
+/// This function assumes the block pointer has size have been allocated and filled.
 #[no_mangle]
-pub fn myalloc(len: usize) -> *mut u8 {
-    let buf = vec![0u8; len];
-    Box::leak(buf.into_boxed_slice()).as_mut_ptr()
+pub unsafe fn encode(ptr: *mut u8, len: u32) -> *const ValueOrError {
+    BencodeCodec {}.encode(ptr, len)
 }
 
 /// Given a pointer to the start of a byte array and
@@ -27,23 +66,8 @@ pub fn myalloc(len: usize) -> *mut u8 {
 ///
 /// This function assumes the block pointer has size have been allocated and filled.
 #[no_mangle]
-pub unsafe fn decode(ptr: *mut u8, len: usize, out_len: &mut u32) -> *const u8 {
-    let data = Vec::from_raw_parts(ptr, len, len);
-    let result = decode_block(&data, out_len);
-
-    let bx = result.into_boxed_slice();
-    Box::into_raw(bx) as *const u8
-}
-
-fn decode_block(input: &[u8], out_len: &mut u32) -> Vec<u8> {
-    let res = bencode_to_wac_block(input);
-    match res {
-        Ok(v) => {
-            *out_len = v.len() as u32;
-            v
-        }
-        Err(x) => panic!("{:#?}", x),
-    }
+pub unsafe fn decode(ptr: *mut u8, len: u32) -> *const ValueOrError {
+    BencodeCodec {}.decode(ptr, len)
 }
 
 pub enum WacBencode {
@@ -102,6 +126,7 @@ fn decoder_inner(
                     .ok_or_else(|| Error::msg("invalid list"))?
                     == &b'e'
                 {
+                    cursor += 1;
                     output.write_varint(num_elems)?;
                     output.write_all(&buf)?;
                     return Ok((cursor, WacCode::List));
@@ -119,6 +144,7 @@ fn decoder_inner(
             let mut num_elems: usize = 0;
             loop {
                 if input.get(cursor).ok_or_else(|| Error::msg("invalid map"))? == &b'e' {
+                    cursor += 1;
                     output.write_varint(num_elems)?;
                     output.write_all(&buf)?;
                     return Ok((cursor, WacCode::Map));
@@ -172,7 +198,8 @@ fn get_int(input: &[u8], mut cursor: usize, terminator: u8) -> Result<(usize, us
 mod tests {
     use std::convert::TryInto;
 
-    use crate::{decode, encode, myalloc};
+    use crate::{decode, encode};
+    use helpers::{myalloc, ByteWrapper, ValueOrError};
 
     #[test]
     fn test_int() {
@@ -199,6 +226,14 @@ mod tests {
         )
     }
 
+    #[test]
+    fn test_fixture() {
+        let block = include_bytes!("../../bittorrent-fixtures/animals-fixtures/animals.infodict");
+        let fixture_wac = convert_block(block, decode);
+        let hex_fixture_wac = hex::encode(fixture_wac);
+        assert_eq!(hex_fixture_wac, "0904060566696c65730802090206066c656e6774680392d510060470617468080106094b6f616c612e6a7067090206066c656e67746803a6dc050604706174680801060970616e64612e6a706706046e616d650607616e696d616c73060c7069656365206c656e677468038080100606706965636573062813da56fd10d288769fdea62d464572c5f16e967ddc462b4d35419ca9230d69d758f0832a30959baa")
+    }
+
     fn test_equality(bencode_block: &str, wac_block: &[u8]) {
         assert_eq!(decode_string(bencode_block), wac_block);
         assert_eq!(encode_bytes(wac_block), bencode_block.as_bytes())
@@ -214,7 +249,7 @@ mod tests {
 
     fn convert_block(
         input: &[u8],
-        transform_fn: unsafe fn(ptr: *mut u8, len: usize, out_len: &mut u32) -> *const u8,
+        transform_fn: unsafe fn(ptr: *mut u8, len: u32) -> *const ValueOrError,
     ) -> Vec<u8> {
         // call the `alloc` function
         let ptr = myalloc(input.len());
@@ -225,40 +260,17 @@ mod tests {
             std::ptr::copy(input.as_ptr(), ptr, input.len());
             // call the `array_sum` function with the pointer
             // and the length of the array
-            let mut output_len: u32 = 0;
-            let res_start = transform_fn(ptr, input.len(), &mut output_len);
+            let res = transform_fn(ptr, input.len() as u32);
+            if !(*res).err.is_null() {
+                panic!("error in block conversion")
+            }
+            let val = &*((*res).value as *const ByteWrapper);
 
-            let ol_res = output_len.try_into().unwrap();
+            let ol_res = val.msg_len.try_into().unwrap();
             output = vec![0; ol_res];
-            std::ptr::copy(res_start, output.as_mut_ptr(), ol_res);
+            std::ptr::copy(val.msg_ptr, output.as_mut_ptr(), ol_res);
         }
         output
-    }
-}
-
-/// Given a pointer to the start of a byte array of WAC data
-/// encode the data into the codec
-///
-/// # Safety
-///
-/// This function assumes the block pointer has size have been allocated and filled.
-#[no_mangle]
-pub unsafe fn encode(ptr: *mut u8, len: usize, out_len: &mut u32) -> *const u8 {
-    let data = Vec::from_raw_parts(ptr, len, len);
-    let result = encode_block(&data, out_len);
-
-    let bx = result.into_boxed_slice();
-    Box::into_raw(bx) as *const u8
-}
-
-fn encode_block(input: &[u8], out_len: &mut u32) -> Vec<u8> {
-    let res = wac_to_bencode_block(input);
-    match res {
-        Ok(v) => {
-            *out_len = v.len() as u32;
-            v
-        }
-        Err(x) => panic!("{:#?}", x),
     }
 }
 

@@ -1,5 +1,5 @@
 [package]
-name = "bencode"
+name = "bt_v1"
 version = "0.1.0"
 edition = "2021"
 authors = ["Adin Schmahmann <adin.schmahmann@gmail.com>"]
@@ -20,7 +20,7 @@ default = ["wee_alloc"]
 wee_alloc = { version = "0.4.5", optional = true }
 
 libipld = {version = "0.13.1"}
-integer-encoding = { version = "3.0.3"}
-num_enum = { version = "0.5.7" }
-hex = { version = "0.4" }
 wac = { path = "../wac" }
+helpers = { path = "../helpers" }
+hex = { version = "0.4" }
+ouroboros = {version = "0.15.0" }
