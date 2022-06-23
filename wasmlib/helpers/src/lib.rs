@@ -1,9 +1,9 @@
 /*
-
 Items still unclear:
 - What to do about 32 vs 64 bit? Do we just define everything as 32 bit until 64 bit wasm is everywhere?
 - How to free memory, both that used by the host to pass data in and for data returned (e.g. strings)
 - If/how we allow multiple modules to work together without going through the host
+- How to make it easy for someone to make a compatible WASM module
 */
 
 /// Allocate memory into the module's linear memory
@@ -248,32 +248,78 @@ pub unsafe fn load_wac_block_caller(blk_cid: Cid) -> Result<Box<[u8]>, libipld::
     }
 }
 
+use std::ffi::c_void;
+
+use libipld::Cid;
+
+pub trait Codec {
+    /// Given a pointer to the start of a byte array of WAC data
+    /// encode the data into the codec
+    ///
+    /// # Safety
+    ///
+    /// This function assumes the block pointer has size have been allocated and filled.
+    unsafe fn encode(&self, ptr: *mut u8, len: u32) -> *const ValueOrError;
+
+    /// Given a pointer to the start of a byte array and
+    /// its length, decode it into a standard IPLD codec representation
+    /// (for now WAC)
+    ///
+    /// # Safety
+    ///
+    /// This function assumes the block pointer has size have been allocated and filled.
+    unsafe fn decode(&self, ptr: *mut u8, len: u32) -> *const ValueOrError;
+}
+
+pub trait AdlBase {
+    /// Takes a pointer and length of a byte array containing WAC encoded data and returns
+    /// a pointer to the ADL instance.
+    ///
+    /// # Safety
+    ///
+    /// This function assumes the block pointer has size have been allocated and filled.
+    unsafe fn load_adl(&self, ptr: *mut u8, len: u32) -> *mut ADLorWAC;
+}
+
+#[allow(clippy::missing_safety_doc)]
+pub trait AdlBytes {
+    unsafe fn new_bytes_reader(&self, adlptr: *const c_void) -> *mut c_void;
+    unsafe fn read_adl(&self, adlptr: *mut u8, bufptr: *mut u8, bufleni: i32) -> *const ReadResp;
+    unsafe fn seek_adl(&self, adlptr: *mut c_void, offset: i64, whence: u32) -> u64;
+}
+
+#[allow(clippy::missing_safety_doc)]
+pub trait AdlMap {
+    unsafe fn new_map_iter(&self, adlptr: *const c_void) -> *mut c_void;
+    unsafe fn iter_next(&self, adlptr: *mut c_void) -> *const IterResp;
+    unsafe fn get_key(
+        &self,
+        adlptr: *mut c_void,
+        key_ptr: *mut u8,
+        key_len: i32,
+    ) -> *const ADLorWAC;
+    unsafe fn adl_len(&self, adlptr: *const c_void) -> i64;
+}
+
+// unsafe fn iter_done(adlptr: *mut u8) -> *const BoolOrError;
+
+#[allow(clippy::missing_safety_doc)]
+pub trait AdlList {
+    unsafe fn get_index(&self, adlptr: *mut u8, index: i32) -> *const ADLorWAC;
+    unsafe fn new_list_iter(&self, adlptr: *mut u8) -> *const ValueOrError;
+    unsafe fn iter_next(&self, adlptr: *mut c_void) -> *const IterResp;
+    unsafe fn adl_len(&self, adlptr: *const c_void) -> i64;
+}
+
 /*
-
-use std::any::Any;
-
-All returned data structures
-
 /// Given a pointer to the start of a byte array of WAC data
 /// encode the data into the codec
-///
 ///
 /// # Safety
 ///
 /// This function assumes the block pointer has size have been allocated and filled.
 #[no_mangle]
-pub unsafe fn encode(ptr: *mut u8, len: u32) -> *const ValueOrError {
-    let len = len as usize;
-    let data = ::std::slice::from_raw_parts(ptr, len);
-
-    let result : Result<Vec<u8>, libipld::error::Error> = encode_safe(data);
-
-    get_result_bytes(result)
-}
-
-fn encode_safe(blk : &[u8]) -> Result<Vec<u8>, libipld::error::Error> {
-    return Ok(blk.to_vec())
-}
+pub unsafe fn encode(ptr: *mut u8, len: u32) -> *const ValueOrError {}
 
 /// Given a pointer to the start of a byte array and
 /// its length, decode it into a standard IPLD codec representation
@@ -283,26 +329,7 @@ fn encode_safe(blk : &[u8]) -> Result<Vec<u8>, libipld::error::Error> {
 ///
 /// This function assumes the block pointer has size have been allocated and filled.
 #[no_mangle]
-pub unsafe fn decode(ptr: *mut u8, len: u32) -> *const ValueOrError {
-    let len = len as usize;
-    let data = ::std::slice::from_raw_parts(ptr, len);
-    let result = decode_safe(data);
-
-    get_result_bytes(result)
-}
-
-fn decode_safe(blk : &[u8]) -> Result<Vec<u8>, libipld::error::Error> {
-    return Ok(blk.to_vec())
-}
-
-// ADLs
-
-/*
-    ADL pointers should be able to specify both the data and the type
-    such that the host caller doesn't need to change function names depending on the type
-
-    An example might be returning *mut dyn Any and then downcasting to the relevant type or leveraging TypeIds
-*/
+pub unsafe fn decode(ptr: *mut u8, len: u32) -> *const ValueOrError {}
 
 /// Takes a pointer and length of a byte array containing WAC encoded data and returns
 /// a pointer to the ADL instance.
@@ -311,31 +338,23 @@ fn decode_safe(blk : &[u8]) -> Result<Vec<u8>, libipld::error::Error> {
 ///
 /// This function assumes the block pointer has size have been allocated and filled.
 #[no_mangle]
-pub unsafe fn load_adl(ptr: *mut u8, len: u32) -> *mut ValueOrError{
-    let len = len as usize;
-    let block_data = ::std::slice::from_raw_parts(ptr, len);
+pub unsafe fn load_adl(ptr: *mut u8, len: u32) -> *mut ADLorWAC {}
 
-    let result_or_err = load_adl_safe(block_data);
-    match result_or_err {
-        Err(error) => {
-            get_error(error) as *mut ValueOrError
-        },
-        Ok(val) => {
-            let res = Box::new(ValueOrError {
-                err : std::ptr::null(),
-                value : val as *mut u8,
-            });
-            Box::into_raw(res)
-        },
-    }
-}
+/// # Safety
+///
+/// This function assumes the adlptr is to a valid adl node
+#[no_mangle]
+pub unsafe fn new_bytes_reader(adlptr: *const c_void) -> *mut c_void {}
 
-fn load_adl_safe(blk : &[u8]) -> Result<*const u8, libipld::error::Error> {
-    let b : Box<dyn Any> = Box::new(blk.clone().to_owned());
-    return Ok(Box::into_raw(b) as *const u8)
-}
-
-// Bytes
+/// Takes a pointer to an ADL as well as a buffer and its length
+/// and returns the number of bytes read.
+///
+/// # Safety
+///
+/// This function assumes the adl pointer is to a valid adl node.
+/// Also assumes the buffer pointer is to an allocated and usable buffer.
+#[no_mangle]
+pub unsafe fn read_adl(adlptr: *mut u8, bufptr: *mut u8, bufleni: i32) -> *const ReadResp {}
 
 /// Takes a pointer to an ADL along with the offset and whence enum.
 /// It returns the offset from the start of the data.
@@ -351,152 +370,35 @@ fn load_adl_safe(blk : &[u8]) -> Result<*const u8, libipld::error::Error> {
 ///
 /// This function assumes the adlptr is to a valid adl node
 #[no_mangle]
-pub unsafe fn seek_adl(adlptr: *mut u8, offset: i64, whence: u32) -> u64 {
-    // Get ADL
-    let mut fb = Box::from_raw(adlptr as *mut dyn Any);
+pub unsafe fn seek_adl(adlptr: *mut c_void, offset: i64, whence: u32) -> u64 {}
 
-    // Release ADL memory
-    // Box::leak(fb);
+/// # Safety
+///
+/// This function assumes the adlptr is to a valid adl node
+#[no_mangle]
+pub unsafe fn new_map_iter(adlptr: *const c_void) -> *mut c_void {}
 
-    0
-}
+/// # Safety
+///
+/// This function assumes the adlptr is to a valid adl node
+#[no_mangle]
+pub unsafe fn iter_next(adlptr: *mut c_void) -> *const IterResp {}
 
 /// Takes a pointer to an ADL as well as a buffer and its length
-/// and returns the number of bytes read.
-///
-/// TODO: Allow returning an error
+/// and returns either an error, an ADL pointer, or WAC data.
 ///
 /// # Safety
 ///
 /// This function assumes the adl pointer is to a valid adl node.
 /// Also assumes the buffer pointer is to an allocated and usable buffer.
 #[no_mangle]
-pub unsafe fn read_adl(adlptr: *mut u8, bufptr: *mut u8, bufleni: i32) -> u32 {
-    // Get and type check ADL
-
-    // Get buffer
-    let mut buf = Vec::from_raw_parts(
-        bufptr,
-        bufleni.try_into().unwrap(),
-        bufleni.try_into().unwrap(),
-    );
-
-    // Read into the buffer
-    //let res = read_adl_safer(fb.as_mut(), &mut buf);
-    let res = 0;
-
-    // Release ADL
-    //Box::leak(fb);
-    let b_buf = Box::new(buf);
-    // Release buffer
-    Box::leak(b_buf);
-    res
-}
-
-// Other Scalars (no "large versions")
-
-/// Takes a pointer to an ADL and returns a pointer to its WAC encoding
-///
-/// TODO: Allow returning an error
-/// TODO: Is it worth having more efficient paths for bool, null and int? Seems unlikely given they're unlikely to be used
-/// TODO: Do we need BigInt? Should we bother with any of these until they're needed?
-///
-/// # Safety
-///
-/// This function assumes the adl pointer is to a valid adl node.
-/// Also assumes the buffer pointer is to an allocated and usable buffer.
-#[no_mangle]
-pub unsafe fn adl_get_generic(adlptr: *mut u8) -> *const u8 {
-    // Get ADL
-    //let mut fb = Box::from_raw(adlptr as *mut FileReader);
-
-    // Read into the buffer
-    //let res = adl_bool_safer(fb.as_mut(), &mut buf);
-    let res = std::ptr::null();
-
-    // Release ADL
-    //Box::leak(fb);
-    res
-}
-
-// Recursive Types
+pub unsafe fn get_key(adlptr: *mut c_void, key_ptr: *mut u8, key_len: i32) -> *const ADLorWAC {}
 
 /// Takes a pointer to an ADL and returns its length.
 ///
-/// TODO: Should we allow returning an error?
-///
 /// # Safety
 ///
 /// This function assumes the adlptr is to a valid adl node
 #[no_mangle]
-pub unsafe fn adl_len(adlptr: *mut u8) -> i64 {
-    0
-}
-
-/// Takes a pointer to an ADL as well as a buffer and its length
-/// and returns either an error, an ADL pointer, or WAC data.
-///
-/// TODO: Allow returning an error
-///
-/// # Safety
-///
-/// This function assumes the adl pointer is to a valid adl node.
-/// Also assumes the buffer pointer is to an allocated and usable buffer.
-#[no_mangle]
-pub unsafe fn get_key(adlptr: *mut u8, key_ptr: *mut u8, key_len: i32) -> *const ADLorWAC {
-
-}
-
-/// Takes a pointer to an ADL as well as a buffer and its length
-/// and returns either an error, an ADL pointer, or WAC data.
-///
-/// TODO: Allow returning an error
-///
-/// # Safety
-///
-/// This function assumes the adl pointer is to a valid adl node.
-/// Also assumes the buffer pointer is to an allocated and usable buffer.
-#[no_mangle]
-pub unsafe fn get_index(adlptr: *mut u8, index: i32) -> *const ADLorWAC {
-
-}
-
-/// Takes a pointer to an ADL and returns a new map iterator over it.
-///
-/// TODO: Should we allow returning an error?
-/// # Safety
-///
-/// This function assumes the adlptr is to a valid adl node
-#[no_mangle]
-pub unsafe fn new_map_iter(adlptr: *mut u8) -> *const ValueOrError {
-}
-
-/// # Safety
-///
-/// This function assumes the adlptr is to a valid adl node
-#[no_mangle]
-pub unsafe fn iter_next(adlptr: *mut u8) -> *const ADLorWAC {
-}
-
-/// # Safety
-///
-/// This function assumes the adlptr is to a valid adl node
-#[no_mangle]
-pub unsafe fn iter_done(adlptr: *mut u8) -> *const BoolOrError {
-}
-
-/// Takes a pointer to an ADL and returns a new map iterator over it.
-///
-/// TODO: Should we allow returning an error?
-/// # Safety
-///
-/// This function assumes the adlptr is to a valid adl node
-#[no_mangle]
-pub unsafe fn new_list_iter(adlptr: *mut u8) -> *const ValueOrError {
-}
-
+pub unsafe fn adl_len(adlptr: *const c_void) -> i64 {}
 */
-
-use std::ffi::c_void;
-
-use libipld::Cid;

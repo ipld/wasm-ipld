@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, io::Write};
 
-use example::{get_result_bytes, ValueOrError};
+use helpers::{get_result_bytes, Codec, ValueOrError};
 use integer_encoding::VarIntWriter;
 use libipld::error::Error;
 
@@ -12,6 +12,40 @@ use wac::WacCode;
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
+struct BencodeCodec {}
+impl helpers::Codec for BencodeCodec {
+    /// Given a pointer to the start of a byte array of WAC data
+    /// encode the data into the codec
+    ///
+    ///
+    /// # Safety
+    ///
+    /// This function assumes the block pointer has size have been allocated and filled.
+    unsafe fn encode(&self, ptr: *mut u8, len: u32) -> *const ValueOrError {
+        let len = len as usize;
+        let data = ::std::slice::from_raw_parts(ptr, len);
+
+        let result: Result<Vec<u8>, libipld::error::Error> = wac_to_bencode_block(data);
+
+        get_result_bytes(result)
+    }
+
+    /// Given a pointer to the start of a byte array and
+    /// its length, decode it into a standard IPLD codec representation
+    /// (for now WAC)
+    ///
+    /// # Safety
+    ///
+    /// This function assumes the block pointer has size have been allocated and filled.
+    unsafe fn decode(&self, ptr: *mut u8, len: u32) -> *const ValueOrError {
+        let len = len as usize;
+        let data = ::std::slice::from_raw_parts(ptr, len);
+        let result = bencode_to_wac_block(data);
+
+        get_result_bytes(result)
+    }
+}
+
 /// Given a pointer to the start of a byte array of WAC data
 /// encode the data into the codec
 ///
@@ -21,12 +55,7 @@ static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 /// This function assumes the block pointer has size have been allocated and filled.
 #[no_mangle]
 pub unsafe fn encode(ptr: *mut u8, len: u32) -> *const ValueOrError {
-    let len = len as usize;
-    let data = ::std::slice::from_raw_parts(ptr, len);
-
-    let result: Result<Vec<u8>, libipld::error::Error> = wac_to_bencode_block(data);
-
-    get_result_bytes(result)
+    BencodeCodec {}.encode(ptr, len)
 }
 
 /// Given a pointer to the start of a byte array and
@@ -38,11 +67,7 @@ pub unsafe fn encode(ptr: *mut u8, len: u32) -> *const ValueOrError {
 /// This function assumes the block pointer has size have been allocated and filled.
 #[no_mangle]
 pub unsafe fn decode(ptr: *mut u8, len: u32) -> *const ValueOrError {
-    let len = len as usize;
-    let data = ::std::slice::from_raw_parts(ptr, len);
-    let result = bencode_to_wac_block(data);
-
-    get_result_bytes(result)
+    BencodeCodec {}.decode(ptr, len)
 }
 
 pub enum WacBencode {
@@ -173,9 +198,8 @@ fn get_int(input: &[u8], mut cursor: usize, terminator: u8) -> Result<(usize, us
 mod tests {
     use std::convert::TryInto;
 
-    use example::{myalloc, ByteWrapper, ValueOrError};
-
     use crate::{decode, encode};
+    use helpers::{myalloc, ByteWrapper, ValueOrError};
 
     #[test]
     fn test_int() {

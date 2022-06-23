@@ -188,3 +188,31 @@ fn into_bytes_inner(input: Wac, output: &mut Vec<u8>) -> Result<(), Error> {
         }
     }
 }
+
+pub fn ipld_try_map(i: Wac) -> Result<BTreeMap<Vec<u8>, Wac>, Error> {
+    match i {
+        Wac::Map(val) => Ok(val),
+        _ => Err(libipld::error::Error::msg("not a map")),
+    }
+}
+
+pub fn ipld_try_list(i: Wac) -> Result<Vec<Wac>, Error> {
+    match i {
+        Wac::List(val) => Ok(val),
+        _ => Err(libipld::error::Error::msg("not a list")),
+    }
+}
+
+pub fn ipld_try_int(i: Wac) -> Result<i128, Error> {
+    match i {
+        Wac::Integer(val) => Ok(val),
+        _ => Err(libipld::error::Error::msg("not an integer")),
+    }
+}
+
+pub fn ipld_try_bytestring(i: Wac) -> Result<Vec<u8>, Error> {
+    match i {
+        Wac::String(val) => Ok(val),
+        _ => Err(libipld::error::Error::msg("not a bytestring")),
+    }
+}

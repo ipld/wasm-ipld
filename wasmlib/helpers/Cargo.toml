@@ -1,5 +1,5 @@
 [package]
-name = "example"
+name = "helpers"
 version = "0.1.0"
 edition = "2021"
 authors = ["Adin Schmahmann <adin.schmahmann@gmail.com>"]

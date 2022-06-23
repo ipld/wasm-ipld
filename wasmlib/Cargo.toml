@@ -4,7 +4,7 @@ members = [
     "bencode",
     "bt_v1",
     "wac",
-    "example"
+    "helpers"
 ]
 
 [profile.release]
