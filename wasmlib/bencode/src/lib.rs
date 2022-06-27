@@ -81,12 +81,14 @@ pub enum WacBencode {
     Map(BTreeMap<Vec<u8>, WacBencode>),
 }
 
+// Take a bencoded block of data and transcode it into WAC
 fn bencode_to_wac_block(input: &[u8]) -> Result<Vec<u8>, Error> {
     let mut v = Vec::new();
     decoder_inner(input, 0, &mut v)?;
     Ok(v)
 }
 
+// Recursive transcoding function
 fn decoder_inner(
     input: &[u8],
     mut cursor: usize,

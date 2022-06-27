@@ -189,6 +189,8 @@ fn into_bytes_inner(input: Wac, output: &mut Vec<u8>) -> Result<(), Error> {
     }
 }
 
+// Helper functions for casting WAC objects
+
 pub fn ipld_try_map(i: Wac) -> Result<BTreeMap<Vec<u8>, Wac>, Error> {
     match i {
         Wac::Map(val) => Ok(val),
