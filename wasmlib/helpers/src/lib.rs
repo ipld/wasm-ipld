@@ -146,6 +146,7 @@ extern "C" {
     fn load_wac_block(cid_bytes: *const u8, cid_length: u8) -> *const BlockResp;
 }
 
+// Used for testing and matching the wasm extern function
 #[cfg(not(target_arch = "wasm32"))]
 fn load_raw_block(cid_bytes: *const u8, cid_length: u8) -> *const BlockResp {
     let c_bytes;
@@ -169,6 +170,7 @@ fn load_raw_block(cid_bytes: *const u8, cid_length: u8) -> *const BlockResp {
     Box::into_raw(res)
 }
 
+// Used for testing and matching the wasm extern function
 #[cfg(not(target_arch = "wasm32"))]
 fn load_wac_block(cid_bytes: *const u8, cid_length: u8) -> *const BlockResp {
     let c_bytes;
@@ -192,6 +194,7 @@ fn load_wac_block(cid_bytes: *const u8, cid_length: u8) -> *const BlockResp {
     Box::into_raw(res)
 }
 
+// Used for testing and matching the wasm extern function
 #[cfg(not(target_arch = "wasm32"))]
 pub mod global_blocks {
     use std::{collections::HashMap, sync::Mutex};

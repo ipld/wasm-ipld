@@ -616,6 +616,7 @@ fn load_adl_internal(input: &[u8]) -> Result<Box<ReturnedValues>, Error> {
             ));
         }
 
+        // if it's a file return a file
         let len_int: u64 = wac::ipld_try_int(len.to_owned())?.try_into()?;
         let file = BTFile {
             start_offset: 0,
@@ -634,6 +635,9 @@ fn load_adl_internal(input: &[u8]) -> Result<Box<ReturnedValues>, Error> {
         .ok_or_else(|| libipld::error::Error::msg("files not in node"))?;
     let files_list = wac::ipld_try_list(files_list.to_owned())?;
 
+    // if it's a directory create the directory object and return it
+    // BitTorrent-v1 has all the hashlinks for every piece of content in the directory
+    // in the block referred to by the infohash
     let mut dir = BTDir {
         children: BTreeMap::new(),
     };
@@ -654,6 +658,8 @@ fn load_adl_internal(input: &[u8]) -> Result<Box<ReturnedValues>, Error> {
                 _ => return Err(Error::msg("path segment not a string")),
             };
 
+            // If there are still path segments left create "virtual" directory objects that
+            // can be traversed, enumerated, etc.
             if i != path_segs.len() - 1 {
                 let next_dir = internal_dir
                     .children
@@ -674,6 +680,8 @@ fn load_adl_internal(input: &[u8]) -> Result<Box<ReturnedValues>, Error> {
                     }
                 }
             } else {
+                // If we've reached a file then figure out which pieces it starts and ends with
+                // as well as the offset in the starting piece and create a file object from that
                 let file_len = d
                     .get("length".as_bytes())
                     .and_then(|w| wac::ipld_try_int(w.to_owned()).ok())
