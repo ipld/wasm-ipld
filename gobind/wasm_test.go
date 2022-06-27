@@ -21,6 +21,7 @@ import (
 )
 
 func TestBasicCodecAndADL(t *testing.T) {
+	// This test loads in the bencode codec and BitTorrent ADLs and uses them to read a test fixture and make sure it works
 	codecWasm, err := ioutil.ReadFile("../wasmlib/target/wasm32-unknown-unknown/release/bencode.wasm")
 	if err != nil {
 		panic(err)
