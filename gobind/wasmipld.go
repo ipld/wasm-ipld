@@ -47,6 +47,7 @@ type wasmCodec struct {
 	fuelPerOp int
 }
 
+// NewWasmCodec creates a WASM based IPLD codec from the WASM code
 func NewWasmCodec(wasm []byte, opts ...WasmCodecOption) (*wasmCodec, error) {
 	config := wasmtime.NewConfig()
 	config.SetConsumeFuel(true)
@@ -107,16 +108,15 @@ func (c *wasmCodec) Decode(assembler datamodel.NodeAssembler, reader io.Reader) 
 		return err
 	}
 
-	// // string for alloc
+	// Allocate memory
 	size := int32(len(block))
-
-	// //Allocate memory
 	blockPtrI, err := alloc.Call(store, size)
 	if err != nil {
 		return err
 	}
 	blockPtr, _ := blockPtrI.(int32)
 
+	// Copy block data into WASM
 	buf := memory.UnsafeData(store)
 	copy(buf[blockPtr:], block)
 
@@ -134,15 +134,20 @@ func (c *wasmCodec) Decode(assembler datamodel.NodeAssembler, reader io.Reader) 
 	}
 	fmt.Printf("Fuel consumed for block decoding: %d\n", fc)
 
+	// Check if the decode was successful
 	valuePtr, err := loadValueOrError(decodePtr, buf)
 	if err != nil {
 		return err
 	}
+	// If so extract the WAC-encoded bytes from WASM
 	wacBytes := loadByteWrapper(buf[valuePtr:], buf)
+	// And then decode them into an abstract node
 	return WacDecode(assembler, bytes.NewReader(wacBytes))
 }
 
 func (c *wasmCodec) Encode(nd datamodel.Node, w io.Writer) error {
+	// First encode the data into WAC before we ask WASM to transcode it into the
+	// particular codec
 	var wacbuf bytes.Buffer
 	if err := WacEncode(nd, &wacbuf); err != nil {
 		return err
@@ -168,16 +173,16 @@ func (c *wasmCodec) Encode(nd datamodel.Node, w io.Writer) error {
 	alloc := instance.GetExport(store, "myalloc").Func()
 
 	block := wacbuf.Bytes()
-	// // string for alloc
-	size := int32(len(block))
 
-	// //Allocate memory
+	// Allocate memory
+	size := int32(len(block))
 	blockPtrI, err := alloc.Call(store, size)
 	if err != nil {
 		return err
 	}
 	blockPtr, _ := blockPtrI.(int32)
 
+	// Copy the WAC-encoded node into WASM
 	buf := memory.UnsafeData(store)
 	copy(buf[blockPtr:], block)
 
@@ -195,10 +200,13 @@ func (c *wasmCodec) Encode(nd datamodel.Node, w io.Writer) error {
 	}
 	fmt.Printf("Fuel consumed for block encoding: %d\n", fc)
 
+	// Check for an error
 	valuePtr, err := loadValueOrError(encodePtr, buf)
 	if err != nil {
 		return err
 	}
+
+	// Extract the data encoded into the codec and write it out
 	blockBytes := loadByteWrapper(buf[valuePtr:], buf)
 	if _, err := w.Write(blockBytes); err != nil {
 		return err

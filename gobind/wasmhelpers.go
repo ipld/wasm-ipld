@@ -52,6 +52,7 @@ import (
 	"unsafe"
 )
 
+// loadByteWrapper decodes the ByteWrapper to bytes
 func loadByteWrapper(data []byte, backingBuffer []byte) []byte {
 	var foo unsafe.Pointer = C.CBytes(data[:C.sizeof_struct_ByteWrapper])
 	x := *(*C.struct_ByteWrapper)(foo)
@@ -62,6 +63,7 @@ func loadByteWrapper(data []byte, backingBuffer []byte) []byte {
 
 type wasmPointer uint32
 
+// loadValueOrError returns a pointer to some WASM data or an error
 func loadValueOrError(dataPtr int32, backingBuffer []byte) (wasmPointer, error) {
 	var foo unsafe.Pointer = C.CBytes(backingBuffer[dataPtr : dataPtr+C.sizeof_struct_ValueOrError])
 	x := *(*C.struct_ValueOrError)(foo)
@@ -80,6 +82,8 @@ func loadValueOrError(dataPtr int32, backingBuffer []byte) (wasmPointer, error) 
 	return wasmPointer(valPtr), nil
 }
 
+// loadADLorWAC returns either a pointer to an ADL in WASM along with its kind,  WAC encoded data, or an error.
+// The kind is an integer whose values happen to match the ones from WAC.
 func loadADLorWAC(dataPtr int32, backingBuffer []byte) (wasmPointer, WacCode, []byte, error) {
 	var cptr unsafe.Pointer = C.CBytes(backingBuffer[dataPtr : dataPtr+C.sizeof_struct_ADLorWAC])
 	structData := *(*C.struct_ADLorWAC)(cptr)
@@ -104,6 +108,8 @@ func loadADLorWAC(dataPtr int32, backingBuffer []byte) (wasmPointer, WacCode, []
 	return 0, 0, loadByteWrapper(backingBuffer[wacPtr:], backingBuffer), nil
 }
 
+// loadIterResp returns either a pointer to an ADL in WASM along with its kind,  WAC encoded data, or an error.
+// The kind is an integer whose values happen to match the ones from WAC.
 func loadIterResp(data, backingBuffer []byte) (string, wasmPointer, WacCode, []byte, error) {
 	var cptr unsafe.Pointer = C.CBytes(data[:C.sizeof_struct_IterResp])
 	structData := *(*C.struct_IterResp)(cptr)
@@ -135,6 +141,7 @@ func loadIterResp(data, backingBuffer []byte) (string, wasmPointer, WacCode, []b
 	return key, 0, 0, loadByteWrapper(backingBuffer[wacPtr:], backingBuffer), nil
 }
 
+// loadReadResp returns the number of bytes read or an error
 func loadReadResp(dataPtr int32, backingBuffer []byte) (uint32, error) {
 	var cptr unsafe.Pointer = C.CBytes(backingBuffer[dataPtr : dataPtr+C.sizeof_struct_ReadResp])
 	structData := *(*C.struct_ReadResp)(cptr)
@@ -154,6 +161,8 @@ func loadReadResp(dataPtr int32, backingBuffer []byte) (uint32, error) {
 	return bytesRead, nil
 }
 
+// createBlockResp takes either block data or an error message and allocates it in WASM
+// returning the pointer for where the response lives or an error.
 func createBlockResp(data []byte, isErr bool, alloc func(int32) (int32, []byte, error)) (int32, error) {
 	var dataVal C.struct_BlockResp
 	dataVal.msg_len = C.uint(len(data))

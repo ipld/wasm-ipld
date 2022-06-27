@@ -24,6 +24,7 @@ type wasmADL struct {
 	fuelPerOp int
 }
 
+// NewWasmADL creates a WASM based IPLD ADL from the WASM code
 func NewWasmADL(wasm []byte, opts ...WasmADLOption) (*wasmADL, error) {
 	config := wasmtime.NewConfig()
 	config.SetConsumeFuel(true)
@@ -94,6 +95,7 @@ type wasmtimeThings struct {
 	basewasm *wasmADL
 }
 
+// initialize sets up the WASM environment for the ADL as well as loading the ADL itself
 func (w *wasmADLNode) initialize(substrate ipld.Node) error {
 	// Almost all operations in wasmtime require a contextual `store`
 	// argument to share, so create that first
@@ -146,12 +148,14 @@ func (w *wasmADLNode) initialize(substrate ipld.Node) error {
 
 	}
 
+	// function for if WASM asks for a raw block
 	loadBlockFn := wasmtime.WrapFunc(store, func(caller *wasmtime.Caller, cidPtr int32, cidLen int32) int32 {
 		return blockLoadRespFn(caller, cidPtr, cidLen, func(c cid.Cid) ([]byte, error) {
 			return w.lsys.LoadRaw(w.ctx, cidlink.Link{Cid: c})
 		})
 	})
 
+	// function for if WASM asks for a WAC encoded block
 	loadWACFn := wasmtime.WrapFunc(store, func(caller *wasmtime.Caller, cidPtr int32, cidLen int32) int32 {
 		return blockLoadRespFn(caller, cidPtr, cidLen, func(c cid.Cid) ([]byte, error) {
 			nd, err := w.lsys.Load(w.ctx, cidlink.Link{Cid: c}, basicnode.Prototype.Any)
@@ -185,14 +189,13 @@ func (w *wasmADLNode) initialize(substrate ipld.Node) error {
 
 	var inputBuf bytes.Buffer
 
+	// encode the node into WAC so it can be loaded and processed in WASM
 	if err := WacEncode(substrate, &inputBuf); err != nil {
 		return err
 	}
 
-	// // string for alloc
+	// Allocate memory
 	inputSize := int32(inputBuf.Len())
-
-	// //Allocate memory
 	inputBlkPtrI, err := alloc.Call(store, inputSize)
 	if err != nil {
 		return err
@@ -205,10 +208,11 @@ func (w *wasmADLNode) initialize(substrate ipld.Node) error {
 
 	// TODO: Dellocate input buffer
 
+	// Copy WAC encoded ADL root node into WASM
 	buf := memory.UnsafeData(store)
 	copy(buf[inputBlkPtr:], input)
 
-	// Use load_adl func
+	// Load the ADL
 	retPtrI, err := loadAdlFn.Call(store, inputBlkPtr, inputSize)
 	if err != nil {
 		return err
@@ -224,6 +228,7 @@ func (w *wasmADLNode) initialize(substrate ipld.Node) error {
 		return err
 	}
 
+	// If a pointer to manage the ADL was returned set it up
 	if adlPtr != 0 {
 		w.adlWasmPtr = int32(adlPtr)
 		w.k = adlKind.ToDataModelKind()
@@ -231,7 +236,7 @@ func (w *wasmADLNode) initialize(substrate ipld.Node) error {
 			return fmt.Errorf("invalid datamodel kind for adl")
 		}
 	} else if len(wacBuf) != 0 {
-		// TODO:
+		// TODO: If WAC data was returned (e.g. simple ADLs like a fancy type of BigInt might want to use something like this)
 		return fmt.Errorf("returning WAC during ADL initialization is unsupported")
 	}
 
@@ -257,7 +262,7 @@ func (w *wasmADLNode) LookupByString(key string) (datamodel.Node, error) {
 	alloc := w.w.instance.GetExport(w.w.store, "myalloc").Func()
 	getKeyFn := w.w.instance.GetExport(w.w.store, "get_key").Func()
 
-	//Allocate memory
+	// Allocate memory
 	bufferPtrI, err := alloc.Call(w.w.store, len(key))
 	if err != nil {
 		return nil, err
@@ -268,10 +273,12 @@ func (w *wasmADLNode) LookupByString(key string) (datamodel.Node, error) {
 	}
 
 	// TODO: Dellocate input buffer
+	// copy the key bytes into WASM
 	memory := w.w.instance.GetExport(w.w.store, "memory").Memory()
 	buf := memory.UnsafeData(w.w.store)
 	copy(buf[bufferPtr:], []byte(key))
 
+	// Call the lookup
 	getKeyRespPtrI, err := getKeyFn.Call(w.w.store, w.adlWasmPtr, bufferPtr, int32(len(key)))
 
 	tfc, enabled := w.w.store.FuelConsumed()
@@ -285,6 +292,7 @@ func (w *wasmADLNode) LookupByString(key string) (datamodel.Node, error) {
 		return nil, err
 	}
 
+	// Only check the error from the lookup after we've adjusted the fuel
 	if err != nil {
 		return nil, err
 	}
@@ -295,11 +303,13 @@ func (w *wasmADLNode) LookupByString(key string) (datamodel.Node, error) {
 
 	buf = memory.UnsafeData(w.w.store)
 
+	// Check the response
 	adlPtr, adlKind, wacBytes, err := loadADLorWAC(getKeyRespPtr, buf)
 	if err != nil {
 		return nil, err
 	}
 
+	// If the returned data was WAC encoded just decode and return it
 	if wacBytes != nil {
 		nb := basicnode.Prototype.Any.NewBuilder()
 		if err := WacDecode(nb, bytes.NewReader(wacBytes)); err != nil {
@@ -312,6 +322,7 @@ func (w *wasmADLNode) LookupByString(key string) (datamodel.Node, error) {
 		return nil, fmt.Errorf("no data returned")
 	}
 
+	// Otherwise return a node that is based on a WASM pointer
 	newNode := &wasmADLNode{
 		ctx:        w.ctx,
 		lsys:       w.lsys,
@@ -424,6 +435,8 @@ func (w *wasmADLNode) AsLargeBytes() (io.ReadSeeker, error) {
 	}
 
 	newReaderFn := w.w.instance.GetExport(w.w.store, "new_bytes_reader").Func()
+
+	// Create a new WASM reader that can be used for ReaderSeeker behavior
 	newReaderPtrI, err := newReaderFn.Call(w.w.store, w.adlWasmPtr)
 	if err != nil {
 		return nil, err
@@ -448,7 +461,7 @@ func (r *wasmADLRS) Read(p []byte) (n int, err error) {
 	alloc := r.wt.instance.GetExport(r.wt.store, "myalloc").Func()
 	readFn := r.wt.instance.GetExport(r.wt.store, "read_adl").Func()
 
-	//Allocate memory
+	// Allocate memory for read responses
 	bufferPtrI, err := alloc.Call(r.wt.store, len(p))
 	if err != nil {
 		return 0, err
@@ -458,6 +471,7 @@ func (r *wasmADLRS) Read(p []byte) (n int, err error) {
 		return 0, fmt.Errorf("buffer pointer not int32")
 	}
 
+	// Read into the buffer
 	readRespPtrI, err := readFn.Call(r.wt.store, r.adlPtr, bufferPtr, int32(len(p)))
 
 	tfc, enabled := r.wt.store.FuelConsumed()
@@ -471,6 +485,7 @@ func (r *wasmADLRS) Read(p []byte) (n int, err error) {
 		return 0, err
 	}
 
+	// Don't error on the read until after fuel has been adjusted
 	if err != nil {
 		return 0, err
 	}
@@ -481,14 +496,16 @@ func (r *wasmADLRS) Read(p []byte) (n int, err error) {
 
 	// TODO: Dellocate input buffer
 	memory := r.wt.instance.GetExport(r.wt.store, "memory").Memory()
-	buf := memory.UnsafeData(r.wt.store)
 
+	// Check if there was an error
+	buf := memory.UnsafeData(r.wt.store)
 	numReturned, err := loadReadResp(readRespPtr, buf)
 	numRet := int(numReturned)
 	if numRet < 0 {
 		return 0, fmt.Errorf("read return underflow")
 	}
 
+	// If data was read copy it into our output buffer and return how many bytes we read
 	if numRet > 0 {
 		copy(p, buf[bufferPtr:bufferPtr+int32(numRet)])
 	}
@@ -511,6 +528,7 @@ func (r *wasmADLRS) Seek(offset int64, whence int) (int64, error) {
 		return 0, err
 	}
 
+	// Don't error until fuel has been adjusted
 	if err != nil {
 		return 0, err
 	}
