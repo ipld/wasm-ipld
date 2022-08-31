@@ -1,4 +1,4 @@
-module github.com/aschmahmann/wasm-ipld/gobind
+module github.com/ipld/wasm-ipld/gobind
 
 go 1.17
 
