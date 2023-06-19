@@ -71,7 +71,7 @@ jobs:
         go env
     - name: Run tests
       if: matrix.platform.cross == true
-      uses: protocol/multiple-go-modules@v1.2
+      uses: protocol/multiple-go-modules@v1.4
       with:
         # Use -coverpkg=./..., so that we include cross-package coverage.
         # If package ./A imports ./B, and ./A's tests also cover ./B,
