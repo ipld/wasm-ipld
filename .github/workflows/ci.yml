@@ -45,7 +45,7 @@ jobs:
       run: sudo apt-get install llvm-dev
 
     - name: Install rust toolchain
-      uses: hecrj/setup-rust-action@v1
+      uses: hecrj/setup-rust-action@v2
       with:
         rust-version: ${{ matrix.toolchain.rust }}
         targets: ${{ matrix.platform.target }}
@@ -91,7 +91,7 @@ jobs:
         key: lint-cargo
 
     - name: Install rust toolchain
-      uses: hecrj/setup-rust-action@v1
+      uses: hecrj/setup-rust-action@v2
       with:
         rust-version: stable
         components: clippy, rustfmt
