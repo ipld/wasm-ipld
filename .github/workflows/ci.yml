@@ -1,0 +1,105 @@
+name: Continuous integration
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  ci:
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain:
+        - rust: stable
+        platform:
+        - target: x86_64-unknown-linux-gnu
+          host: ubuntu-latest
+          cross: false
+
+        - target: wasm32-unknown-unknown
+          host: ubuntu-latest
+          cross: true
+        go: [ "1.18.x" ]
+    env:
+      RUST_BACKTRACE: 1
+      CARGO_INCREMENTAL: 0
+      LLVM_CONFIG_PATH: /usr/local/opt/llvm/bin/llvm-config
+
+    runs-on: ${{ matrix.platform.host }}
+    steps:
+    - name: Checkout sources
+      uses: actions/checkout@v3
+      with:
+        submodules: recursive
+
+    - name: Cache cargo folder
+      uses: actions/cache@v3
+      with:
+        path: ~/.cargo
+        key: ${{ matrix.platform.target }}-cargo-${{ matrix.toolchain.rust }}
+
+    - name: Install dependencies ubuntu
+      if: matrix.platform.host == 'ubuntu-latest'
+      run: sudo apt-get install llvm-dev
+
+    - name: Install rust toolchain
+      uses: hecrj/setup-rust-action@v1
+      with:
+        rust-version: ${{ matrix.toolchain.rust }}
+        targets: ${{ matrix.platform.target }}
+
+    - name: Rust tests
+      if: matrix.platform.cross == false
+      run: cargo test --workspace --all-features
+      working-directory: ./wasmlib
+
+    - name: Rust build release
+      if: matrix.platform.cross == true
+      run: cargo build --target wasm32-unknown-unknown --release
+      working-directory: ./wasmlib
+
+    - name: Setup Go
+      if: matrix.platform.cross == true
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ matrix.go }}
+    - name: Go information
+      run: |
+        go version
+        go env
+    - name: Run tests
+      if: matrix.platform.cross == true
+      uses: protocol/multiple-go-modules@v1.2
+      with:
+        # Use -coverpkg=./..., so that we include cross-package coverage.
+        # If package ./A imports ./B, and ./A's tests also cover ./B,
+        # this means ./B's coverage will be significantly higher than 0%.
+        run: go test -v -coverprofile=module-coverage.txt -coverpkg=./... ./...
+
+  lint-rust:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout sources
+      uses: actions/checkout@v3
+
+    - name: Cache cargo folder
+      uses: actions/cache@v3
+      with:
+        path: ~/.cargo
+        key: lint-cargo
+
+    - name: Install rust toolchain
+      uses: hecrj/setup-rust-action@v1
+      with:
+        rust-version: stable
+        components: clippy, rustfmt
+
+    - name: cargo fmt
+      run: cargo fmt --all -- --check
+      working-directory: ./wasmlib
+
+    - name: cargo clippy
+      run: cargo clippy --workspace --all-features --examples --tests -- -D warnings
+      working-directory: ./wasmlib
